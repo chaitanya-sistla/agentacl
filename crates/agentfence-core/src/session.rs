@@ -20,6 +20,25 @@ pub struct Session {
     /// Version of the supervisor; `restart` requires one that handles SIGUSR1.
     #[serde(default)]
     pub agentfence_version: Option<String>,
+    /// Policy files this session was built from (for stale detection).
+    #[serde(default)]
+    pub policy_sources: Vec<PolicyInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyInput {
+    pub path: PathBuf,
+    /// sha256 of the file bytes; None if the file did not exist.
+    pub sha256: Option<String>,
+}
+
+impl PolicyInput {
+    pub fn current(path: &std::path::Path) -> PolicyInput {
+        PolicyInput { path: path.to_path_buf(), sha256: std::fs::read(path).ok().map(|b| agentfence_policy::set::sha256_hex(&b)) }
+    }
+    pub fn is_stale(&self) -> bool {
+        PolicyInput::current(&self.path).sha256 != self.sha256
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

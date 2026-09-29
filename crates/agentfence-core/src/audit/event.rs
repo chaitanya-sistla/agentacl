@@ -24,6 +24,7 @@ pub enum EventSource {
     ProcMonitor,
     Supervisor,
     Es,
+    Ui,
 }
 
 impl EventSource {
@@ -34,6 +35,7 @@ impl EventSource {
             EventSource::ProcMonitor => "proc-monitor",
             EventSource::Supervisor => "supervisor",
             EventSource::Es => "es",
+            EventSource::Ui => "ui",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -43,6 +45,7 @@ impl EventSource {
             "proc-monitor" => EventSource::ProcMonitor,
             "supervisor" => EventSource::Supervisor,
             "es" => EventSource::Es,
+            "ui" => EventSource::Ui,
             _ => return None,
         })
     }
@@ -138,6 +141,8 @@ pub enum LifecycleKind {
     SessionStart,
     SessionEnd,
     BackendWarning,
+    /// The policy files (path + sha) a session was built from.
+    PolicyInputs,
 }
 
 impl LifecycleKind {
@@ -146,6 +151,7 @@ impl LifecycleKind {
             LifecycleKind::SessionStart => "session_start",
             LifecycleKind::SessionEnd => "session_end",
             LifecycleKind::BackendWarning => "backend_warning",
+            LifecycleKind::PolicyInputs => "policy.inputs",
         }
     }
 }

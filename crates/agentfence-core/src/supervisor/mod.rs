@@ -296,6 +296,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         backend: backend.name().into(),
         started_at: now_rfc3339(),
         agentfence_version: Some(env!("CARGO_PKG_VERSION").into()),
+        policy_sources: policy_inputs(paths, opts, &project).iter().map(|p| crate::session::PolicyInput::current(p)).collect(),
     };
     let watch = integrity::watch_list(&project, &session.human.home);
     Ok(Prepared { session, policy, reqs, rules, agent_argv, extra_denies, exec_deny_literals, socket_denies, watch, session_dir })
@@ -664,6 +665,8 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
             exit_code: None,
         })?;
         st.record_lifecycle(&ctx, LifecycleEvent { kind: LifecycleKind::SessionStart, pid: Some(s.parent_pid), detail: s.agent.binary.clone() })?;
+        let inputs: Vec<String> = s.policy_sources.iter().map(|i| format!("{}={}", i.path.display(), i.sha256.as_deref().unwrap_or("absent"))).collect();
+        st.record_lifecycle(&ctx, LifecycleEvent { kind: LifecycleKind::PolicyInputs, pid: None, detail: inputs.join(" ") })?;
     }
 
     // Spawn.
