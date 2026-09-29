@@ -26,7 +26,7 @@ The spec lives in `docs/{architecture,threat-model,policy-model,macos-enforcemen
 - Session ids are `agt_` + ULID. Event ids are `evt_` + ULID. Machine ids are `mch_` + the first 16 hex chars of sha256(IOPlatformUUID).
 - Every renderer escapes C0/C1 control characters and ESC in paths, argv and reasons (threat T15b).
 - No web UI, SaaS, auth server, Docker, OPA, or ES implementation (the ES backend is a stub only).
-- Commit after each task: `feat(<area>): …` with the `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` trailer.
+- Commit after each task: `feat(<area>): …`. Author is the repo owner only; no Claude co-author trailers or AI attribution anywhere.
 
 ## File Structure
 
