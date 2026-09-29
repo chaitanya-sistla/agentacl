@@ -11,3 +11,5 @@ pub use model::*;
 pub use raw::{parse_doc, RawDoc, RawRule, RuleKind};
 pub mod expand;
 pub mod pathpat;
+pub mod netpat;
+pub mod procpat;
