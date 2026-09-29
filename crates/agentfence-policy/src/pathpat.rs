@@ -41,14 +41,10 @@ fn has_glob(s: &str) -> bool {
 fn translate(pat: &str, fold: bool) -> Result<String, String> {
     let segs: Vec<&str> = pat.split('/').skip(1).collect();
     let mut out = String::new();
-    let n = segs.len();
-    for (i, seg) in segs.iter().enumerate() {
+    for seg in &segs {
         if *seg == "**" {
-            if i + 1 == n {
-                out.push_str("(/.*)?");
-            } else {
-                out.push_str("(/.*)?");
-            }
+            // zero or more whole segments, whether trailing or in the middle
+            out.push_str("(/.*)?");
             continue;
         }
         if seg.contains("**") {

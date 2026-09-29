@@ -88,7 +88,7 @@ impl Fixture {
 }
 
 fn input() -> CompileInput<'static> {
-    CompileInput { proxy_port: 18999, ..Default::default() }
+    CompileInput { proxy_port: 18999, session_tag: "agt_TEST", ..Default::default() }
 }
 
 // ---------------- pure compiler tests ----------------
@@ -97,7 +97,7 @@ fn input() -> CompileInput<'static> {
 fn profile_invariants() {
     let f = Fixture::new();
     let text = sbpl::compile_profile(&f.policy(None), &CompileInput { agent_id: "x", project: &f.project.to_string_lossy(), ..input() }).unwrap();
-    assert!(text.contains("(deny default)"));
+    assert!(text.contains("(deny default"));
     let last_allow = text.rfind("(allow ").unwrap();
     let deny_block = text.find(";; ---- deny rules").unwrap();
     assert!(last_allow < deny_block, "an allow appears after the deny block");
@@ -157,6 +157,7 @@ fn classification_matches_compilation() {
     assert_eq!(get("a.com"), Enforceability::Enforced);
     let t = sbpl::compile_profile(&pol, &CompileInput { agent_id: "x", project: "/p", ..input() }).unwrap();
     assert!(t.contains("(regex #\"/[tT][eE][rR][rR][aA][^/]*$\")"), "{t}");
+    assert!(t.contains("(with message \"af:agt_TEST|user|user/process.deny/0\")"), "{t}");
     assert!(t.contains("(literal \"/opt/x/tool\")"));
     assert!(MacOSEndpointSecurityBackend.available().is_err());
 }

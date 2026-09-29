@@ -19,6 +19,16 @@ pub struct KernelDenial {
     pid: i32,
     op: String,
     target: String,
+    tag: Option<Tag>,
+}
+
+/// The `(with message "af:<session>|<policy>|<rule>")` stamp of the profile
+/// rule that denied the operation, as reported by the kernel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag {
+    pub session: String,
+    pub policy: String,
+    pub rule: String,
 }
 
 impl KernelDenial {
@@ -34,6 +44,9 @@ impl KernelDenial {
     /// The operation's target: a path, `local:*:port`, a Mach service name…
     pub fn target(&self) -> &str {
         &self.target
+    }
+    pub fn tag(&self) -> Option<&Tag> {
+        self.tag.as_ref()
     }
 }
 
@@ -64,6 +77,11 @@ fn parse_body(body: &str) -> Option<KernelDenial> {
     let rest = &body[di + ") deny(".len()..];
     let close = rest.find(") ")?;
     let rest = &rest[close + 2..];
+    // A profile `with message` is appended by the kernel after a newline.
+    let (rest, tag) = match rest.split_once('\n') {
+        Some((r, m)) => (r, parse_tag(m)),
+        None => (rest, None),
+    };
     let (op, target) = match rest.split_once(' ') {
         Some((op, t)) => (op.to_string(), t.to_string()),
         None => (rest.to_string(), String::new()),
@@ -71,7 +89,13 @@ fn parse_body(body: &str) -> Option<KernelDenial> {
     if op.is_empty() || !op.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '*') {
         return None;
     }
-    Some(KernelDenial { proc_name, pid, op, target })
+    Some(KernelDenial { proc_name, pid, op, target, tag })
+}
+
+fn parse_tag(m: &str) -> Option<Tag> {
+    let body = m.trim().strip_prefix("af:")?;
+    let mut it = body.splitn(3, '|');
+    Some(Tag { session: it.next()?.to_string(), policy: it.next()?.to_string(), rule: it.next()?.to_string() })
 }
 
 pub fn parse_ndjson_line(line: &str) -> LogLine {
@@ -191,6 +215,18 @@ mod tests {
         let LogLine::Denial(d) = parse_ndjson_line(REAL) else { panic!() };
         assert_eq!((d.proc_name(), d.pid(), d.op(), d.target()), ("cat", 22304, "file-read-data", "/private/tmp/a b/.env"));
         assert_eq!(describe(&d), ("filesystem.read".into(), "/private/tmp/a b/.env".into()));
+    }
+
+    #[test]
+    fn parses_session_tag() {
+        let l = r#"{"eventMessage":"Sandbox: cat(35235) deny(1) file-read-data \/p\/.env\naf:agt_X|protect-secrets|env-files","processID":0}"#;
+        let LogLine::Denial(d) = parse_ndjson_line(l) else { panic!() };
+        assert_eq!(d.target(), "/p/.env");
+        let t = d.tag().unwrap();
+        assert_eq!((t.session.as_str(), t.policy.as_str(), t.rule.as_str()), ("agt_X", "protect-secrets", "env-files"));
+        let other = r#"{"eventMessage":"Sandbox: cat(1) deny(1) file-read-data \/x\nsomething else","processID":0}"#;
+        let LogLine::Denial(d) = parse_ndjson_line(other) else { panic!() };
+        assert!(d.tag().is_none());
     }
 
     #[test]

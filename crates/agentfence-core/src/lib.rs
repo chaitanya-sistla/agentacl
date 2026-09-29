@@ -11,3 +11,4 @@ pub mod identity;
 pub mod session;
 pub mod observe;
 pub mod netproxy;
+pub mod supervisor;
