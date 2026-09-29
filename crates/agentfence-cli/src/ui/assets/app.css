@@ -19,6 +19,7 @@ h2 { font-size: 16px; margin: 20px 0 6px; } h3 { font-size: 15px; margin: 22px 0
 .grid { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .grid th, .grid td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .grid th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+.grid td { overflow-wrap: anywhere; }
 .grid td.path { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .pill.deny { background: color-mix(in srgb, var(--deny) 20%, transparent); color: var(--deny); }

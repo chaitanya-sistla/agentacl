@@ -93,13 +93,34 @@ cargo install --path crates/agentfence-cli
 agentfence discover                      # installed and running agents
 agentfence run -- claude                 # launch Claude Code under supervision
 agentfence run --dry-run -- claude       # show identity, rules and the sandbox profile
+agentfence ui                            # local policy UI in your browser (127.0.0.1 only)
 agentfence restart                       # apply a policy change: relaunch the agent, conversation kept (claude --continue)
+agentfence policy trust --sha256 <sha>   # let this project's .agentfence/policy.yaml grant access (exact bytes, this project only)
 agentfence agents [--all]                # supervised sessions (and unsupervised agents)
 agentfence status                        # backend, capabilities, active sessions
 agentfence policy check                  # effective rules and how each is enforced
 agentfence policy check --path .env      # evaluate a single request, with a trace
 agentfence events [--follow] [--json]    # audit log
 ```
+
+## Policy UI
+
+`agentfence ui` opens a local page with four tabs:
+
+- **Sessions**: live agents and events. A session is flagged when its policy
+  changed, and **Relaunch** applies the change; Claude Code resumes its
+  conversation.
+- **Policy**: edit the user policy or a project policy as rules or as YAML.
+  Before saving, you see what agents gain or lose, and the change goes through
+  the same validation as `agentfence run`.
+- **Files**: browse folders, see what an agent can read or write for each
+  entry, and add allow/deny rules with a click.
+- **Test**: check whether an agent could read a path, run a command or reach
+  a host.
+
+The UI binds only to `127.0.0.1` and opens with a single-use link. Supervised
+agents can't reach it, and it can do nothing the CLI can't
+(`docs/ui.md` §5).
 
 ## Policy
 

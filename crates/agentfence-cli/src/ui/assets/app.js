@@ -56,6 +56,7 @@ async function api(method, path, body) {
 // ---------- bootstrap ----------
 async function bootstrap() {
   const m = /code=([0-9a-f]+)/.exec(location.hash);
+  const tabm = /tab=(sessions|policy|files|test)/.exec(location.hash);
   history.replaceState(null, '', '/');
   if (!m) { banner('Open the UI with the link printed by `agentfence ui` (press Enter there for a new one).'); return; }
   const r = await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: m[1] }) });
@@ -74,6 +75,7 @@ async function bootstrap() {
   wire();
   await loadPolicy();
   refreshSessions(); pollEvents();
+  if (tabm) document.querySelector('nav .tab[data-tab="' + tabm[1] + '"]').click();
   setInterval(refreshSessions, 3000); setInterval(pollEvents, 1500);
 }
 
