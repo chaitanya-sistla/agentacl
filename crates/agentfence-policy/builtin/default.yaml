@@ -1,0 +1,14 @@
+# Starter policy, applied only when no user policy exists (policy-model §3).
+version: v1
+name: default
+
+defaults:
+  filesystem: deny
+  network: deny
+  process: allow
+
+filesystem:
+  allow_read:
+    - "${PROJECT}/**"
+  allow_write:
+    - "${PROJECT}/**"

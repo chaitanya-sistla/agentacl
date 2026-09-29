@@ -2,7 +2,14 @@ use agentfence_policy::expand::{expand, Expanded, Vars};
 use agentfence_policy::pathpat::{PatKind, PathPattern};
 
 fn vars() -> Vars {
-    Vars { home: "/u".into(), project: "/p".into(), tmpdir: "/private/var/t".into(), agent_state: None }
+    Vars {
+        home: "/u".into(),
+        project: "/p".into(),
+        tmpdir: "/private/var/t".into(),
+        agent_state: None,
+        agentfence_state: "/u/state".into(),
+        agentfence_config: "/u/.config/agentfence".into(),
+    }
 }
 
 fn pat(s: &str) -> PathPattern {

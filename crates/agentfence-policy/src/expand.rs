@@ -11,6 +11,9 @@ pub struct Vars {
     pub project: String,
     pub tmpdir: String,
     pub agent_state: Option<String>,
+    /// AgentFence's own state and config dirs (write-denied in every profile).
+    pub agentfence_state: String,
+    pub agentfence_config: String,
 }
 
 /// An expanded pattern string. `var_root` is the value of a *leading*
@@ -41,6 +44,8 @@ pub fn expand(s: &str, vars: &Vars, source: &str) -> Result<Expanded, PolicyErro
             "PROJECT" => Some(vars.project.clone()),
             "TMPDIR" => Some(vars.tmpdir.clone()),
             "AGENT_STATE" => vars.agent_state.clone(),
+            "AGENTFENCE_STATE" => Some(vars.agentfence_state.clone()),
+            "AGENTFENCE_CONFIG" => Some(vars.agentfence_config.clone()),
             _ => None,
         }
         .ok_or_else(|| PolicyError::UnknownVariable { doc: source.into(), var: name.into() })?;
@@ -85,7 +90,14 @@ mod tests {
     use super::*;
 
     fn vars() -> Vars {
-        Vars { home: "/u".into(), project: "/p".into(), tmpdir: "/private/var/folders/t".into(), agent_state: None }
+        Vars {
+            home: "/u".into(),
+            project: "/p".into(),
+            tmpdir: "/private/var/folders/t".into(),
+            agent_state: None,
+            agentfence_state: "/u/Library/Application Support/AgentFence".into(),
+            agentfence_config: "/u/.config/agentfence".into(),
+        }
     }
 
     #[test]

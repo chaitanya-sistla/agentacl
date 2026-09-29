@@ -1,0 +1,54 @@
+# Files that a tool later executes on the human's behalf, outside the sandbox
+# (threat model T19). Write-denied; cannot be disabled.
+version: v1
+name: exec-persistence
+
+filesystem:
+  deny_write:
+    # Git reads config-like indirections from many places (config, hooks,
+    # commondir, gitfiles, worktrees/*, modules/*/config), so the writable set
+    # is an allowlist of data files. The pattern also matches the `.git` entry
+    # itself, so it cannot be created, removed or replaced by a gitfile.
+    - path: "${PROJECT}/**/.git/**"
+      except:
+        - "**/.git/objects/**"
+        - "**/.git/refs/**"
+        - "**/.git/logs/**"
+        - "**/.git/index"
+        - "**/.git/HEAD"
+        - "**/.git/ORIG_HEAD"
+        - "**/.git/FETCH_HEAD"
+        - "**/.git/MERGE_*"
+        - "**/.git/AUTO_MERGE"
+        - "**/.git/REBASE_HEAD"
+        - "**/.git/CHERRY_PICK_HEAD"
+        - "**/.git/REVERT_HEAD"
+        - "**/.git/COMMIT_EDITMSG"
+        - "**/.git/packed-refs"
+        - "**/.git/*.lock"
+        - "**/.git/rebase-merge/**"
+        - "**/.git/rebase-apply/**"
+        - "**/.git/sequencer/**"
+      id: exec-persistence
+      reason: "Git configuration and hooks run outside the sandbox and are protected"
+
+    - { path: "${PROJECT}/.claude/**", id: exec-persistence, reason: "Agent configuration can run commands and is protected" }
+    - { path: "${PROJECT}/.mcp.json", id: exec-persistence, reason: "Agent configuration can run commands and is protected" }
+    - { path: "${PROJECT}/.codex/**", id: exec-persistence, reason: "Agent configuration can run commands and is protected" }
+    - { path: "${PROJECT}/.gemini/**", id: exec-persistence, reason: "Agent configuration can run commands and is protected" }
+    - { path: "${PROJECT}/.vscode/**", id: exec-persistence, reason: "Editor tasks can run commands and are protected" }
+    - { path: "${PROJECT}/.cursor/**", id: exec-persistence, reason: "Agent configuration can run commands and is protected" }
+
+    - { path: "${HOME}/.gitconfig", id: exec-persistence, reason: "Git configuration runs outside the sandbox and is protected" }
+    - { path: "${HOME}/.config/git/**", id: exec-persistence, reason: "Git configuration runs outside the sandbox and is protected" }
+
+    - { path: "${HOME}/.zshrc", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.zprofile", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.zshenv", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.zlogin", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.bashrc", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.bash_profile", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.profile", id: exec-persistence, reason: "Shell startup files are protected" }
+    - { path: "${HOME}/.config/fish/**", id: exec-persistence, reason: "Shell startup files are protected" }
+
+    - { path: "${HOME}/Library/LaunchAgents/**", id: exec-persistence, reason: "Launch agents run outside the sandbox and are protected" }

@@ -1,0 +1,51 @@
+# What any process needs to run on macOS (policy-model §5.1). Allows only:
+# they never override a deny. Refined empirically with
+# scripts/capture-baseline.sh; never add anything protect-secrets matches.
+version: v1
+name: runtime
+
+filesystem:
+  allow_read:
+    - "/System/**"
+    - "/usr/lib/**"
+    - "/usr/libexec/**"
+    - "/usr/bin/**"
+    - "/usr/sbin/**"
+    - "/usr/share/**"
+    - "/bin/**"
+    - "/sbin/**"
+    - "/Library/Apple/**"
+    - "/Library/Preferences/**"
+    - "/Library/Frameworks/**"
+    - "/Library/Developer/CommandLineTools/**"
+    - "/Applications/Xcode.app/**"
+    - "/opt/homebrew/bin/**"
+    - "/opt/homebrew/sbin/**"
+    - "/opt/homebrew/lib/**"
+    - "/opt/homebrew/opt/**"
+    - "/opt/homebrew/Cellar/**"
+    - "/opt/homebrew/Caskroom/**"
+    - "/opt/homebrew/share/**"
+    - "/opt/homebrew/etc/**"
+    - "/opt/homebrew/libexec/**"
+    - "/usr/local/bin/**"
+    - "/usr/local/lib/**"
+    - "/usr/local/opt/**"
+    - "/usr/local/Cellar/**"
+    - "/usr/local/share/**"
+    - "/usr/local/etc/**"
+    - "/private/etc/**"
+    - "/private/var/db/timezone/**"
+    - "/private/var/select/**"
+    - "/dev/random"
+    - "/dev/urandom"
+    - "/dev/zero"
+    - "/dev/dtracehelper"
+    - "${HOME}/.gitconfig"
+    - "${HOME}/.config/git/**"
+  allow_write:
+    - "${TMPDIR}/**"
+    - "/private/tmp/**"
+    - "/dev/null"
+    - "/dev/tty"
+    - "/dev/fd/**"
