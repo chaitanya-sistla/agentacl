@@ -338,6 +338,13 @@ mod tests {
     fn decision(effect: Effect) -> Decision {
         Decision { effect, policy: "protect-secrets".into(), rule_id: "env-files".into(), reason: "r".into(), trace: vec![] }
     }
+    fn kd(pid: i32, path: &str) -> crate::observe::sandbox_log::KernelDenial {
+        let line = format!(r#"{{"eventMessage":"Sandbox: cat({pid}) deny(1) file-read-data {path}","processID":0}}"#);
+        match crate::observe::sandbox_log::parse_ndjson_line(&line) {
+            crate::observe::sandbox_log::LogLine::Denial(d) => d,
+            other => panic!("{other:?}"),
+        }
+    }
     fn store() -> (tempfile::TempDir, Store) {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(&d.path().join("state/agentfence.db")).unwrap();
@@ -349,7 +356,7 @@ mod tests {
         let (_d, s) = store();
         let c = ctx();
         s.record_lifecycle(&c, LifecycleEvent { kind: LifecycleKind::SessionStart, pid: Some(1), detail: "x".into() }).unwrap();
-        s.record_enforced(&c, EnforcedEvent::kernel(5, vec!["claude-code".into(), "cat".into()], "filesystem.read".into(), "/p/.env".into(), decision(Effect::Deny), 1)).unwrap();
+        s.record_enforced(&c, EnforcedEvent::from_kernel(&kd(5, "/p/.env"), vec!["claude-code".into(), "cat".into()], decision(Effect::Deny), 1)).unwrap();
         s.record_observed(&c, ObservedEvent { pid: Some(6), delegation_chain: vec![], action: "process.exec".into(), resource: "git push".into(), decision: decision(Effect::Ask) }).unwrap();
         let all = s.events(&EventQuery { limit: Some(2), ..Default::default() }).unwrap();
         assert_eq!(all.len(), 2);
@@ -378,7 +385,7 @@ mod tests {
     #[test]
     fn bump_count() {
         let (_d, s) = store();
-        let e = s.record_enforced(&ctx(), EnforcedEvent::kernel(5, vec![], "filesystem.read".into(), "/x".into(), decision(Effect::Deny), 1)).unwrap();
+        let e = s.record_enforced(&ctx(), EnforcedEvent::from_kernel(&kd(5, "/x"), vec![], decision(Effect::Deny), 1)).unwrap();
         s.bump_count(&e.id, 3).unwrap();
         let got = s.events(&EventQuery::default()).unwrap();
         assert_eq!(got[0].1.count, 4);

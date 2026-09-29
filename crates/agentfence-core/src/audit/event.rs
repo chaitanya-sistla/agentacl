@@ -107,9 +107,11 @@ pub struct EnforcedEvent {
 }
 
 impl EnforcedEvent {
-    /// Kernel sandbox report (the denial happened in the kernel).
-    pub(crate) fn kernel(pid: i32, chain: Vec<String>, action: String, resource: String, decision: Decision, count: u32) -> Self {
-        EnforcedEvent { source: EventSource::SandboxLog, pid: Some(pid), delegation_chain: chain, action, resource, decision, count }
+    /// Kernel sandbox report. Requires a parsed [`KernelDenial`], which only
+    /// the log parser can construct: the denial happened in the kernel.
+    pub(crate) fn from_kernel(d: &crate::observe::sandbox_log::KernelDenial, chain: Vec<String>, decision: Decision, count: u32) -> Self {
+        let (action, resource) = crate::observe::sandbox_log::describe(d);
+        EnforcedEvent { source: EventSource::SandboxLog, pid: Some(d.pid()), delegation_chain: chain, action, resource, decision, count }
     }
     /// Proxy decision (the proxy connected or refused).
     pub(crate) fn proxy(action: String, resource: String, decision: Decision) -> Self {
