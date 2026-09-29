@@ -64,11 +64,21 @@ impl T {
     fn origin(&self) -> String {
         format!("http://127.0.0.1:{}", self.st.port)
     }
+    /// Redeems a code; returns the session token from the Set-Cookie header.
     fn login(&self) -> String {
         let code = self.st.mint_code().unwrap();
-        let (s, v) = self.post_raw("/api/session", &format!("{{\"code\":\"{code}\"}}"), None);
-        assert_eq!(s, 200, "{v}");
-        v["token"].as_str().unwrap().to_string()
+        let body = format!("{{\"code\":\"{code}\"}}");
+        let mut s = TcpStream::connect(("127.0.0.1", self.st.port)).unwrap();
+        let (h, o) = (self.host(), self.origin());
+        s.write_all(format!("POST /api/session HTTP/1.1\r\nHost: {h}\r\nOrigin: {o}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+        assert!(!out.contains("\"token\""), "token must not reach page script");
+        let prefix = format!("Set-Cookie: af_session_{}=", self.st.port);
+        let line = out.lines().find(|l| l.starts_with(&prefix)).expect("session cookie");
+        assert!(line.contains("HttpOnly") && line.contains("SameSite=Strict"));
+        line[prefix.len()..].split(';').next().unwrap().to_string()
     }
     fn post_raw(&self, path: &str, body: &str, token: Option<&str>) -> (u16, serde_json::Value) {
         let (h, o) = (self.host(), self.origin());
@@ -216,4 +226,66 @@ fn files_view_rules() {
     let docs = v["entries"].as_array().unwrap().iter().find(|e| e["name"] == "docs").cloned().unwrap();
     assert_eq!(docs["actions"]["deny_read"]["rule"], "${PROJECT}/docs/**");
     assert!(docs["actions"]["allow_read"]["unavailable"].is_string(), "project scope is restrict-only");
+}
+
+#[test]
+fn cookie_session_needs_custom_header_and_assets_served() {
+    let t = setup();
+    let tok = t.login();
+    let h = t.host();
+    let cookie = format!("af_session_{}={tok}", t.st.port);
+    // a cookie for another port's console doesn't count
+    let other = format!("af_session={tok}");
+    assert_eq!(req(t.st.port, "GET", "/api/status", &[("Host", &h), ("Cookie", &other), ("X-AgentFence", "1")], None).0, 401);
+    // cookie alone (what a cross-site form/img could send) is refused
+    assert_eq!(req(t.st.port, "GET", "/api/status", &[("Host", &h), ("Cookie", &cookie)], None).0, 401);
+    // cookie + X-AgentFence (needs a CORS preflight cross-site, which we refuse)
+    let (s, v) = req(t.st.port, "GET", "/api/status", &[("Host", &h), ("Cookie", &cookie), ("X-AgentFence", "1")], None);
+    assert_eq!(s, 200);
+    assert!(v["warnings"].is_array() && v["backend"]["name"] == "seatbelt");
+    // a foreign Origin on a GET is refused too
+    assert_eq!(req(t.st.port, "GET", "/api/status", &[("Host", &h), ("Cookie", &cookie), ("X-AgentFence", "1"), ("Origin", "http://evil.com")], None).0, 403);
+    // the built console is embedded at fixed paths
+    for p in ["/assets/app.js", "/assets/app.css"] {
+        let mut s = TcpStream::connect(("127.0.0.1", t.st.port)).unwrap();
+        s.write_all(format!("GET {p} HTTP/1.1\r\nHost: {h}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 200"), "{p}");
+        assert!(out.contains("Content-Security-Policy"), "{p}");
+    }
+}
+
+#[test]
+fn fs_node_and_project_scope_guard() {
+    let t = setup();
+    let tok = t.login();
+    let p = t.project.to_string_lossy().into_owned();
+    std::fs::create_dir_all(t.project.join("docs")).unwrap();
+    let (s, v) = t.post(&tok, "/api/fs/node", serde_json::json!({ "scope": "project", "project": p, "path": format!("{p}/docs") }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["actions"]["deny_read"]["rule"], "${PROJECT}/docs/**");
+    assert_eq!(t.post(&tok, "/api/fs/node", serde_json::json!({ "scope": "user", "project": p, "path": "relative" })).0, 400);
+    // an unknown picker purpose is refused before anything runs
+    assert_eq!(t.post(&tok, "/api/pick-folder", serde_json::json!({ "purpose": "rm" })).0, 400);
+    // the machine-wide map works without a project
+    let (s, v) = t.post(&tok, "/api/map", serde_json::json!({ "scope": "user", "project": "" }));
+    assert_eq!(s, 200, "{v}");
+    assert!(v["roots"].is_array());
+}
+
+#[test]
+fn preview_reports_changes_per_agent_and_excepts() {
+    let t = setup();
+    let tok = t.login();
+    let p = t.project.to_string_lossy().into_owned();
+    let y = "version: v1\nfilesystem:\n  deny_read:\n    - path: \"${PROJECT}/data/**\"\n      except: [\"${PROJECT}/data/public/**\"]\n";
+    let (s, v) = t.post(&tok, "/api/policy/preview", serde_json::json!({ "scope": "project", "project": p, "yaml": y }));
+    assert_eq!(s, 200, "{v}");
+    let added = v["effective_diff"]["added"].as_array().unwrap();
+    let hit = added.iter().find(|a| a["key"].as_str().unwrap().contains("/data/**")).expect("deny listed");
+    assert!(hit["key"].as_str().unwrap().contains(" except "), "{hit}");
+    assert_eq!(hit["agents"], serde_json::json!([]), "applies to every agent");
+    assert!(v["unreadable_projects"].is_array());
+    assert!(v["current_sha256"].is_null());
 }

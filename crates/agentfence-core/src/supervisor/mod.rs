@@ -534,6 +534,32 @@ extern "C" fn on_restart(_: libc::c_int) {
 }
 
 /// Asks the supervisor with `pid` to relaunch its agent (see [`run`]).
+/// The live supervisor pid of `s`, refusing a pid that was reused: the
+/// process must be an `agentfence` binary that started no later than the
+/// session did (a reused pid belongs to a process started afterwards).
+pub fn verified_supervisor(s: &crate::audit::SessionRecord) -> Result<i32> {
+    let f = crate::proc::facts(s.supervisor_pid).ok_or_else(|| anyhow::anyhow!("the supervisor of {} is not running", s.session_id))?;
+    let exe = f.exe.unwrap_or_default();
+    if !exe.ends_with("/agentfence") {
+        bail!("pid {} is no longer an agentfence supervisor ({exe})", s.supervisor_pid);
+    }
+    let started = crate::audit::parse_ts(&s.started_at).ok_or_else(|| anyhow::anyhow!("session {} has an unreadable start time", s.session_id))?;
+    if (f.start_time_us / 1_000_000) as i64 > started + 5 {
+        bail!("pid {} started after session {}; it is not that session's supervisor", s.supervisor_pid, s.session_id);
+    }
+    Ok(s.supervisor_pid)
+}
+
+/// Asks a supervisor to stop its agent (SIGTERM, forwarded to the agent's
+/// process group; the supervisor then records the session end).
+pub fn request_stop(pid: i32) -> Result<()> {
+    // SAFETY: kill has no memory effects.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+        bail!("could not signal supervisor {pid}: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 pub fn request_restart(pid: i32) -> Result<()> {
     // SAFETY: kill has no memory effects.
     if unsafe { libc::kill(pid, libc::SIGUSR1) } != 0 {

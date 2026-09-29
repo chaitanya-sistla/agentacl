@@ -127,6 +127,20 @@ fn row_event(r: &Row) -> rusqlite::Result<(i64, Event)> {
     ))
 }
 
+/// Seconds since the epoch of an RFC 3339 UTC timestamp we wrote.
+pub fn parse_ts(s: &str) -> Option<i64> {
+    let (y, m, d) = (s.get(0..4)?.parse::<i64>().ok()?, s.get(5..7)?.parse::<i64>().ok()?, s.get(8..10)?.parse::<i64>().ok()?);
+    let (hh, mm, ss) = (s.get(11..13)?.parse::<i64>().ok()?, s.get(14..16)?.parse::<i64>().ok()?, s.get(17..19)?.parse::<i64>().ok()?);
+    // days from civil (Hinnant)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400 + hh * 3600 + mm * 60 + ss)
+}
+
 fn row_session(r: &Row) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
         session_id: r.get("session_id")?,
@@ -351,6 +365,22 @@ impl Store {
             args.push(Box::new(s.clone()));
             filter.push_str(&format!(" AND session_id = ?{}", args.len()));
         }
+        if let Some(a) = &p.agent {
+            args.push(Box::new(a.clone()));
+            filter.push_str(&format!(" AND agent = ?{}", args.len()));
+        }
+        if let Some(pr) = &p.project {
+            args.push(Box::new(pr.clone()));
+            filter.push_str(&format!(" AND session_id IN (SELECT session_id FROM sessions WHERE project = ?{})", args.len()));
+        }
+        if let Some(since) = &p.since {
+            args.push(Box::new(since.clone()));
+            filter.push_str(&format!(" AND ts >= ?{}", args.len()));
+        }
+        if let Some(policy) = &p.policy {
+            args.push(Box::new(policy.clone()));
+            filter.push_str(&format!(" AND policy = ?{}", args.len()));
+        }
         match p.kind.as_str() {
             "blocked" => filter.push_str(" AND enforcement = 'enforced' AND decision IN ('deny','ask')"),
             "observed" => filter.push_str(" AND enforcement = 'observed'"),
@@ -361,7 +391,7 @@ impl Store {
         if !p.search.is_empty() {
             args.push(Box::new(format!("%{}%", p.search.replace('%', "\\%").replace('_', "\\_"))));
             let n = args.len();
-            filter.push_str(&format!(" AND (resource LIKE ?{n} ESCAPE '\\' OR action LIKE ?{n} ESCAPE '\\' OR IFNULL(rule_id,'') LIKE ?{n} ESCAPE '\\' OR agent LIKE ?{n} ESCAPE '\\')"));
+            filter.push_str(&format!(" AND (resource LIKE ?{n} ESCAPE '\\' OR action LIKE ?{n} ESCAPE '\\' OR IFNULL(rule_id,'') LIKE ?{n} ESCAPE '\\' OR IFNULL(policy,'') LIKE ?{n} ESCAPE '\\' OR agent LIKE ?{n} ESCAPE '\\')"));
         }
         let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
         let total: i64 = self.conn.query_row(&format!("SELECT COUNT(*) FROM events{filter}"), refs.as_slice(), |r| r.get(0))?;
@@ -369,6 +399,63 @@ impl Store {
         let mut st = self.conn.prepare(&sql)?;
         let rows = st.query_map(refs.as_slice(), row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((total as u64, rows))
+    }
+
+    /// Per-project summary of every project any session ran in.
+    pub fn project_summaries(&self, since: &str) -> Result<Vec<serde_json::Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT s.project,
+                    COUNT(*) AS sessions,
+                    SUM(CASE WHEN s.ended_at IS NULL THEN 1 ELSE 0 END) AS active,
+                    MAX(s.started_at) AS last_seen,
+                    (SELECT IFNULL(SUM(e.count),0) FROM events e JOIN sessions s2 ON e.session_id = s2.session_id
+                       WHERE s2.project = s.project AND e.ts >= ?1 AND e.enforcement = 'enforced' AND e.decision IN ('deny','ask')) AS blocked
+             FROM sessions s GROUP BY s.project ORDER BY last_seen DESC",
+        )?;
+        let rows = st
+            .query_map(params![since], |r| {
+                Ok(serde_json::json!({
+                    "path": r.get::<_, String>(0)?,
+                    "sessions": r.get::<_, i64>(1)?,
+                    "active_sessions": r.get::<_, i64>(2)?,
+                    "last_seen": r.get::<_, Option<String>>(3)?,
+                    "blocked_24h": r.get::<_, i64>(4)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Enforced denials per hour for the last 24 h (oldest first), 24 buckets.
+    pub fn blocked_timeline(&self, now_secs: i64) -> Result<Vec<i64>> {
+        let mut out = vec![0i64; 24];
+        let since = super::event::format_rfc3339(now_secs - 24 * 3600, 0);
+        let mut st = self.conn.prepare("SELECT ts, count FROM events WHERE ts >= ?1 AND enforcement = 'enforced' AND decision IN ('deny','ask')")?;
+        let rows = st.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in rows.flatten() {
+            if let Some(t) = parse_ts(&row.0) {
+                let age_h = (now_secs - t) / 3600;
+                if (0..24).contains(&age_h) {
+                    out[23 - age_h as usize] += row.1;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Most-blocked resources since `since`.
+    pub fn top_blocked(&self, since: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT resource, action, policy, rule_id, SUM(count) AS n FROM events
+             WHERE ts >= ?1 AND enforcement = 'enforced' AND decision IN ('deny','ask')
+             GROUP BY resource, action ORDER BY n DESC LIMIT ?2",
+        )?;
+        let rows = st
+            .query_map(params![since, limit as i64], |r| {
+                Ok(serde_json::json!({ "resource": r.get::<_, String>(0)?, "action": r.get::<_, String>(1)?, "policy": r.get::<_, Option<String>>(2)?, "rule_id": r.get::<_, Option<String>>(3)?, "count": r.get::<_, i64>(4)? }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Counts for the overview cards since `since` (RFC 3339).
@@ -386,6 +473,13 @@ impl Store {
 #[derive(Debug, Clone, Default)]
 pub struct EventPage {
     pub session: Option<String>,
+    pub agent: Option<String>,
+    /// Events of sessions in this project.
+    pub project: Option<String>,
+    /// RFC 3339 lower bound.
+    pub since: Option<String>,
+    /// Only events decided by this policy (e.g. `protect-secrets`).
+    pub policy: Option<String>,
     /// all | blocked | observed | allowed | system
     pub kind: String,
     pub search: String,
@@ -469,6 +563,13 @@ mod tests {
         let (_, last) = s.events_page(&EventPage { kind: "all".into(), limit: 7, offset: 28, ..Default::default() }).unwrap();
         assert_eq!(last.len(), 2);
         assert_eq!(s.counts_since("1970-01-01T00:00:00.000Z").unwrap()["blocked"], 10);
+    }
+
+    #[test]
+    fn timestamp_roundtrip() {
+        for t in [0i64, 951_782_400, 1_790_000_000] {
+            assert_eq!(parse_ts(&format_rfc3339(t, 0)), Some(t));
+        }
     }
 
     #[test]

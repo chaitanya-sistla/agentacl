@@ -4,4 +4,4 @@ pub mod event;
 pub mod store;
 
 pub use event::*;
-pub use store::{EventPage, EventQuery, SessionRecord, Store};
+pub use store::{parse_ts, EventPage, EventQuery, SessionRecord, Store};

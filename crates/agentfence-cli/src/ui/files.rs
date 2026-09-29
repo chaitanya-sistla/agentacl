@@ -79,7 +79,7 @@ fn representable(p: &str) -> bool {
 }
 
 /// Has any component (including the leaf) of `p` a symlink?
-fn has_symlink_component(p: &Path) -> bool {
+pub fn has_symlink_component(p: &Path) -> bool {
     let mut cur = PathBuf::from("/");
     for c in p.components().skip(1) {
         cur.push(c);

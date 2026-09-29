@@ -1,8 +1,10 @@
 //! `agentfence ui`: local policy UI (docs/ui.md). Security model, §5:
 //! - loopback only; `Host` must be exactly `127.0.0.1:PORT`
 //! - the URL carries a single-use 60 s bootstrap code; the page exchanges it
-//!   for a bearer token kept only in page memory; a replayed code revokes all
-//!   tokens and stops the server
+//!   for a session token set as an HttpOnly SameSite=Strict cookie named per
+//!   port; API calls also need the `X-AgentFence: 1` header (a cross-site
+//!   page can't send it without a refused CORS preflight); a replayed code
+//!   revokes all tokens and stops the server
 //! - every POST needs `Origin: http://127.0.0.1:PORT` and a JSON body; no CORS
 //! - strict CSP; all dynamic text is inserted with textContent
 
@@ -17,9 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-const INDEX_HTML: &str = include_str!("assets/index.html");
-const APP_JS: &str = include_str!("assets/app.js");
-const APP_CSS: &str = include_str!("assets/app.css");
+// Built from `crates/agentfence-cli/web` (`npm run build`); committed so a
+// plain `cargo build` needs no Node toolchain.
+const INDEX_HTML: &str = include_str!("dist/index.html");
+const APP_JS: &str = include_str!("dist/assets/app.js");
+const APP_CSS: &str = include_str!("dist/assets/app.css");
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 const CODE_TTL: Duration = Duration::from_secs(60);
 
@@ -29,6 +33,8 @@ pub struct UiState {
     pub ctx: EventContext,
     pub store: Mutex<Store>,
     auth: Mutex<Auth>,
+    /// Cached agent discovery (hashing binaries takes a moment).
+    pub discover_cache: Mutex<Option<(Instant, serde_json::Value)>>,
     /// Stop the process when a bootstrap code is replayed (off in tests).
     exit_on_replay: bool,
 }
@@ -78,7 +84,7 @@ pub fn run(paths: Paths, opts: UiOptions) -> Result<i32> {
     };
     agentfence_core::config::ensure_private_dir(&paths.state_dir)?;
     let store = Store::open(&paths.db_path)?;
-    let state = Arc::new(UiState { paths: paths.clone(), port, ctx, store: Mutex::new(store), auth: Mutex::new(Auth::default()), exit_on_replay: true });
+    let state = Arc::new(UiState { paths: paths.clone(), port, ctx, store: Mutex::new(store), auth: Mutex::new(Auth::default()), discover_cache: Mutex::new(None), exit_on_replay: true });
 
     // Tell supervisors' proxies which port to refuse (ui.md §5).
     let lock = paths.state_dir.join(format!("ui-{}.json", std::process::id()));
@@ -89,19 +95,20 @@ pub fn run(paths: Paths, opts: UiOptions) -> Result<i32> {
     }
     let _cleanup = LockGuard(lock);
 
-    warn_old_supervisors(&state);
     let open_new_tab = {
         let state = state.clone();
         move |open: bool| -> Result<()> {
             let code = state.mint_code()?;
             let url = format!("http://127.0.0.1:{}/#code={code}", state.port);
-            eprintln!("AgentFence UI: {url}\n  (single-use link, valid 60s; press Enter here for a new one, Ctrl-C to stop)");
+            // Always print the link too, in case the browser can't be opened.
+            eprintln!("  {url}");
             if open {
                 let _ = std::process::Command::new("/usr/bin/open").arg(&url).status();
             }
             Ok(())
         }
     };
+    eprintln!("AgentFence console running at http://127.0.0.1:{port}  —  press Enter to open it again, Ctrl-C to stop.");
     open_new_tab(opts.open)?;
     {
         let open_new_tab = open_new_tab.clone();
@@ -161,15 +168,17 @@ fn install_sigint_exit() {
     }
 }
 
-fn warn_old_supervisors(state: &UiState) {
-    let Ok(sessions) = state.store.lock().unwrap().active_sessions() else { return };
-    for s in sessions {
-        let v: serde_json::Value = serde_json::from_str(&s.identity_json).unwrap_or_default();
-        let has = v["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "ui-port-deny"));
-        if !has && agentfence_core::proc::facts(s.supervisor_pid).is_some() {
-            eprintln!("warning: session {} was started by an older agentfence whose proxy does not block the UI port; restart that agent", s.session_id);
-        }
-    }
+/// Live sessions whose supervisor predates the UI-port block (shown in the UI).
+pub fn old_supervisor_sessions(state: &UiState) -> Vec<String> {
+    let Ok(sessions) = state.store.lock().unwrap().active_sessions() else { return vec![] };
+    sessions
+        .into_iter()
+        .filter(|s| {
+            let v: serde_json::Value = serde_json::from_str(&s.identity_json).unwrap_or_default();
+            !v["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "ui-port-deny")) && agentfence_core::proc::facts(s.supervisor_pid).is_some()
+        })
+        .map(|s| s.session_id)
+        .collect()
 }
 
 fn header(name: &str, value: &str) -> Header {
@@ -223,8 +232,8 @@ fn route(state: &Arc<UiState>, req: &mut Request) -> Response<std::io::Cursor<Ve
     if method == Method::Get {
         let asset = match path {
             "/" | "/index.html" => Some((INDEX_HTML, "text/html; charset=utf-8")),
-            "/app.js" => Some((APP_JS, "text/javascript; charset=utf-8")),
-            "/app.css" => Some((APP_CSS, "text/css; charset=utf-8")),
+            "/assets/app.js" => Some((APP_JS, "text/javascript; charset=utf-8")),
+            "/assets/app.css" => Some((APP_CSS, "text/css; charset=utf-8")),
             _ => None,
         };
         if let Some((body, ct)) = asset {
@@ -256,13 +265,23 @@ fn route(state: &Arc<UiState>, req: &mut Request) -> Response<std::io::Cursor<Ve
     if method == Method::Post && path == "/api/session" {
         return exchange_code(state, &body);
     }
-    // Bearer token for everything else.
+    // Session: an HttpOnly SameSite=Strict cookie plus a custom header that a
+    // cross-origin page can't send without a (refused) CORS preflight; or a
+    // bearer token (tests, scripts). A present Origin must be our own.
+    if let Some(o) = get_header(req, "Origin") {
+        if o != origin_self {
+            return text(403, "cross-origin request refused");
+        }
+    }
+    let cookie_name = session_cookie(state.port);
     let authed = {
         let a = state.auth.lock().unwrap();
-        match (get_header(req, "Authorization").and_then(|h| h.strip_prefix("Bearer ")), &a.token) {
-            (Some(t), Some(tok)) => ct_eq(t, tok),
-            _ => false,
-        }
+        let Some(tok) = &a.token else { return text(401, "unauthorized") };
+        let bearer = get_header(req, "Authorization").and_then(|h| h.strip_prefix("Bearer ")).is_some_and(|t| ct_eq(t, tok));
+        let cookie = get_header(req, "Cookie")
+            .and_then(|c| c.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(&cookie_name).and_then(|v| v.strip_prefix('='))))
+            .is_some_and(|t| ct_eq(t, tok));
+        bearer || (cookie && get_header(req, "X-AgentFence") == Some("1"))
     };
     if !authed {
         return text(401, "unauthorized");
@@ -291,7 +310,7 @@ fn exchange_code(state: &Arc<UiState>, body: &serde_json::Value) -> Response<std
             if let Ok(s) = state.store.lock() {
                 let _ = s.record_ui(&state.ctx, "ui.code_replay", "bootstrap code", "a UI link was used twice; tokens revoked and the UI stopped");
             }
-            eprintln!("\nA UI link was used twice (possible interception). All UI access revoked; exiting.");
+            eprintln!("A console link was used twice (possible interception). All access revoked; the console stopped.");
             if state.exit_on_replay {
             SHOULD_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
             std::thread::spawn(|| {
@@ -308,10 +327,18 @@ fn exchange_code(state: &Arc<UiState>, body: &serde_json::Value) -> Response<std
                 Err(_) => return text(500, "no randomness"),
             };
             a.token = Some(token.clone());
-            json_response(200, &serde_json::json!({ "token": token }))
+            // The token only travels in the cookie, never to page script.
+            let mut r = json_response(200, &serde_json::json!({ "ok": true }));
+            r.add_header(header("Set-Cookie", &format!("{}={token}; HttpOnly; SameSite=Strict; Path=/", session_cookie(state.port))));
+            r
         }
         _ => text(401, "link expired; press Enter in the agentfence ui terminal for a new one"),
     }
+}
+
+/// Browsers send cookies to every port of a host, so the name carries ours.
+fn session_cookie(port: u16) -> String {
+    format!("af_session_{port}")
 }
 
 fn percent_decode(s: &str) -> String {
@@ -341,7 +368,7 @@ pub fn start_for_test(paths: Paths) -> Result<Arc<UiState>> {
     let ctx = EventContext { human: "t".into(), machine: "m".into(), agent: "agentfence-ui".into(), agent_version: None, session: "ui_test".into(), backend: "seatbelt".into() };
     agentfence_core::config::ensure_private_dir(&paths.state_dir)?;
     let store = Store::open(&paths.db_path)?;
-    let state = Arc::new(UiState { paths, port, ctx, store: Mutex::new(store), auth: Mutex::new(Auth::default()), exit_on_replay: false });
+    let state = Arc::new(UiState { paths, port, ctx, store: Mutex::new(store), auth: Mutex::new(Auth::default()), discover_cache: Mutex::new(None), exit_on_replay: false });
     let st = state.clone();
     std::thread::spawn(move || {
         for req in server.incoming_requests() {

@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::Path;
 
 pub use codesign::{code_signature, CodeSignature};
-pub use libproc::{facts, list_pids, resolve_ancestry, session_members, snapshot};
+pub use libproc::{cwd, facts, list_pids, resolve_ancestry, session_members, snapshot};
 pub use machine::machine_id;
 pub use tree::{ProcessTree, TreeChange};
 
@@ -63,6 +63,12 @@ mod tests {
         assert_eq!(c.argv, vec!["/bin/sleep", "5"]);
         assert_eq!(c.ppid, std::process::id() as i32);
         assert_eq!(c.exe.as_deref(), Some("/bin/sleep"));
+    }
+
+    #[test]
+    fn cwd_of_self() {
+        let me = std::env::current_dir().unwrap();
+        assert_eq!(cwd(std::process::id() as i32).map(std::path::PathBuf::from), Some(std::fs::canonicalize(me).unwrap()));
     }
 
     #[test]

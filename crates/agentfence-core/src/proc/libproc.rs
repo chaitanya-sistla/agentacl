@@ -112,6 +112,21 @@ pub fn facts(pid: i32) -> Option<ProcessFacts> {
     })
 }
 
+/// Current working directory of a same-uid process (PROC_PIDVNODEPATHINFO).
+pub fn cwd(pid: i32) -> Option<String> {
+    // SAFETY: proc_vnodepathinfo is plain data; proc_pidinfo writes at most `size` bytes.
+    unsafe {
+        let mut info: libc::proc_vnodepathinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+        let r = libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&mut info as *mut libc::proc_vnodepathinfo).cast(), size);
+        if r != size {
+            return None;
+        }
+        let p = CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()).to_string_lossy().into_owned();
+        (!p.is_empty()).then_some(p)
+    }
+}
+
 pub fn snapshot() -> Vec<ProcessFacts> {
     list_pids().into_iter().filter_map(facts).collect()
 }

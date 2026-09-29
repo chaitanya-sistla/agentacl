@@ -20,6 +20,15 @@ type Reply = Result<(u16, Value)>;
 pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, String>, body: &Value) -> Reply {
     match (m, path) {
         (Method::Get, "/api/overview") => overview(st),
+        (Method::Get, "/api/status") => status(st),
+        (Method::Get, "/api/agents") => agents(st, q),
+        (Method::Get, "/api/projects") => projects(st),
+        (Method::Post, "/api/projects/add") => project_add(st, body),
+        (Method::Post, "/api/projects/remove") => project_remove(st, body),
+        (Method::Get, "/api/stats") => stats(st),
+        (Method::Get, "/api/builtins") => builtins(st),
+        (Method::Post, "/api/sessions/stop") => stop(st, body),
+        (Method::Post, "/api/reveal") => reveal(body),
         (Method::Get, "/api/sessions") => sessions(st),
         (Method::Post, "/api/sessions/restart") => restart(st, body),
         (Method::Get, "/api/events") => events(st, q),
@@ -28,7 +37,8 @@ pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, S
         (Method::Post, "/api/policy/save") => save(st, body),
         (Method::Post, "/api/fs/list") => fs_list(st, body),
         (Method::Post, "/api/map") => map(st, body),
-        (Method::Post, "/api/pick-folder") => pick_folder(),
+        (Method::Post, "/api/pick-folder") => pick_folder(body),
+        (Method::Post, "/api/fs/node") => fs_node(st, body),
         (Method::Post, "/api/evaluate") => evaluate(st, body),
         _ => Ok((404, json!({ "error": "not found" }))),
     }
@@ -47,10 +57,25 @@ fn scope_of(v: Option<&str>) -> Result<Scope> {
 }
 
 /// Projects always go through the same resolution as `run` (git toplevel,
-/// $HOME and its ancestors refused).
+/// $HOME and its ancestors refused). With no project given, a neutral empty
+/// placeholder (`/private/var/empty`, canonical: `/var` is a symlink) stands in for `${PROJECT}`: nothing depends on
+/// the directory the console was started from.
 fn project_of(v: Option<&str>) -> Result<PathBuf> {
-    let p = v.filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or(std::env::current_dir()?);
-    identity::resolve_project(&p, None, &home()?)
+    match v.filter(|s| !s.is_empty()) {
+        Some(p) => identity::resolve_project(Path::new(p), None, &home()?),
+        None => Ok(PathBuf::from(NO_PROJECT)),
+    }
+}
+
+pub const NO_PROJECT: &str = "/private/var/empty";
+
+/// Project-scope operations need a real project, never the placeholder.
+fn scoped_project(scope: Scope, v: Option<&str>) -> Result<PathBuf> {
+    let p = project_of(v)?;
+    if scope == Scope::Project && p == Path::new(NO_PROJECT) {
+        bail!("choose a project first");
+    }
+    Ok(p)
 }
 
 fn agent_of(v: Option<&str>) -> String {
@@ -79,10 +104,219 @@ fn doc_json(yaml: &str, scope: Scope) -> Value {
     }
 }
 
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+fn since_24h() -> String {
+    agentfence_core::audit::format_rfc3339(now_secs() - 86_400, 0)
+}
+
+/// Machine, backend and health information for the console header/settings.
+fn status(st: &Arc<UiState>) -> Reply {
+    let h = identity::human()?;
+    let old = super::old_supervisor_sessions(st);
+    let mut warnings = vec![];
+    if !old.is_empty() {
+        warnings.push(json!({ "kind": "old-supervisor", "sessions": old, "message": "Some agents were started by an older AgentFence. Restart them to get the latest protections." }));
+    }
+    if let Ok(t) = agentfence_core::trust::load(&st.paths) {
+        if t.legacy_ignored > 0 {
+            warnings.push(json!({ "kind": "legacy-trust", "message": format!("{} old-style trust entries are ignored; re-trust those projects with `agentfence policy trust`.", t.legacy_ignored) }));
+        }
+    }
+    Ok((200, json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "human": h.user,
+        "home": h.home,
+        "machine": proc::machine_id().unwrap_or_default(),
+        "hostname": std::process::Command::new("/bin/hostname").arg("-s").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        "backend": { "name": "seatbelt", "available": true, "description": "macOS kernel sandbox (Seatbelt), applied to the agent and everything it starts" },
+        "endpoint_security": { "available": false, "description": agentfence_core::enforce::endpoint_security::UNAVAILABLE },
+        "paths": { "state": st.paths.state_dir, "config": st.paths.config_dir, "user_policy": st.paths.user_policy, "database": st.paths.db_path },
+        "warnings": warnings,
+    })))
+}
+
+fn discover_json(st: &Arc<UiState>, refresh: bool) -> Result<Value> {
+    {
+        let c = st.discover_cache.lock().unwrap();
+        if let Some((t, v)) = c.as_ref() {
+            if !refresh && t.elapsed() < std::time::Duration::from_secs(30) {
+                return Ok(v.clone());
+            }
+        }
+    }
+    let home = home()?;
+    let (installed, running) = agentfence_core::agents::discover(&home);
+    let v = json!({ "installed": installed, "running": running, "discovered_at": agentfence_core::audit::now_rfc3339() });
+    *st.discover_cache.lock().unwrap() = Some((std::time::Instant::now(), v.clone()));
+    Ok(v)
+}
+
+/// Installed + running agents, each running one marked supervised or not and
+/// linked to its project.
+fn agents(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
+    let mut d = discover_json(st, q.get("refresh").is_some_and(|v| v == "1"))?;
+    // Live (not cached) process state for the running list.
+    let running = agentfence_core::agents::running_agents(&proc::snapshot());
+    let sessions = session_list(st)?;
+    let home = home()?;
+    let run_json: Vec<Value> = running
+        .into_iter()
+        .map(|r| {
+            let session = session_of(&sessions, r.pid).cloned();
+            let project = r.cwd.as_deref().and_then(|c| identity::resolve_project(Path::new(c), None, &home).ok());
+            json!({
+                "id": r.id, "name": r.display_name, "pid": r.pid, "exe": r.exe, "version": r.version,
+                "cwd": r.cwd, "project": project, "started_us": r.started_us,
+                "supervised": session.is_some(), "session": session,
+            })
+        })
+        .collect();
+    d["running"] = json!(run_json);
+    Ok((200, d))
+}
+
+/// The supervised session a process belongs to: the process or one of its
+/// ancestors is a session's agent or supervisor.
+fn session_of(sessions: &[Value], pid: i32) -> Option<&Value> {
+    let chain: Vec<i64> = proc::resolve_ancestry(pid).iter().map(|f| f.pid as i64).collect();
+    sessions.iter().find(|s| chain.iter().any(|p| s["pid"].as_i64() == Some(*p) || s["supervisor_pid"].as_i64() == Some(*p)))
+}
+
+fn saved_projects(st: &Arc<UiState>) -> Vec<String> {
+    let dir = supervisor::canon_or(&st.paths.state_dir);
+    agentfence_core::fsafe::open_dir(&dir)
+        .ok()
+        .and_then(|fd| agentfence_core::fsafe::read_regular(&fd, "ui-projects.json").ok().flatten())
+        .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+        .unwrap_or_default()
+}
+fn write_saved_projects(st: &Arc<UiState>, list: &[String]) -> Result<()> {
+    let dir = agentfence_core::fsafe::open_dir(&supervisor::canon_or(&st.paths.state_dir))?;
+    agentfence_core::fsafe::write_atomic(&dir, "ui-projects.json", serde_json::to_string_pretty(list)?.as_bytes())
+}
+
+/// Every project AgentFence knows about: from sessions, running agents and
+/// projects added in the console.
+fn projects(st: &Arc<UiState>) -> Reply {
+    let home = home()?;
+    let mut by_path: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for p in st.store.lock().unwrap().project_summaries(&since_24h())? {
+        by_path.insert(p["path"].as_str().unwrap_or_default().to_string(), p);
+    }
+    for p in saved_projects(st) {
+        by_path.entry(p.clone()).or_insert_with(|| json!({ "path": p, "sessions": 0, "active_sessions": 0, "last_seen": null, "blocked_24h": 0 }));
+    }
+    let running = agentfence_core::agents::running_agents(&proc::snapshot());
+    let sessions = session_list(st)?;
+    for r in &running {
+        let Some(proj) = r.cwd.as_deref().and_then(|c| identity::resolve_project(Path::new(c), None, &home).ok()) else { continue };
+        let key = proj.to_string_lossy().into_owned();
+        let supervised = session_of(&sessions, r.pid).is_some();
+        let e = by_path.entry(key.clone()).or_insert_with(|| json!({ "path": key, "sessions": 0, "active_sessions": 0, "last_seen": null, "blocked_24h": 0 }));
+        if !supervised {
+            e["unprotected_agents"] = json!(e["unprotected_agents"].as_i64().unwrap_or(0) + 1);
+        }
+    }
+    let trust_for = |p: &Path| agentfence_core::trust::hashes_for(&st.paths, p).unwrap_or_default();
+    let list: Vec<Value> = by_path
+        .into_values()
+        .map(|mut v| {
+            let p = PathBuf::from(v["path"].as_str().unwrap_or_default());
+            // Same safe read as `run` (no symlinks, regular files only, non-blocking).
+            let bytes = if p.is_dir() { draft::read_policy(&st.paths, Scope::Project, &p).ok().flatten() } else { None };
+            v["name"] = json!(p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            v["exists"] = json!(p.is_dir());
+            v["has_project_rules"] = json!(bytes.is_some());
+            v["trusted"] = json!(bytes.as_deref().is_some_and(|b| trust_for(&p).contains(&agentfence_policy::set::sha256_hex(b))));
+            v["unprotected_agents"] = json!(v["unprotected_agents"].as_i64().unwrap_or(0));
+            v["saved"] = json!(saved_projects(st).contains(&v["path"].as_str().unwrap_or_default().to_string()));
+            v
+        })
+        .collect();
+    Ok((200, json!({ "projects": list })))
+}
+
+fn project_add(st: &Arc<UiState>, body: &Value) -> Reply {
+    let p = project_of(body["path"].as_str())?;
+    let s = p.to_string_lossy().into_owned();
+    let mut list = saved_projects(st);
+    if !list.contains(&s) {
+        list.push(s.clone());
+        write_saved_projects(st, &list)?;
+    }
+    Ok((200, json!({ "path": s })))
+}
+
+fn project_remove(st: &Arc<UiState>, body: &Value) -> Reply {
+    let s = body["path"].as_str().context("path required")?;
+    let list: Vec<String> = saved_projects(st).into_iter().filter(|p| p != s).collect();
+    write_saved_projects(st, &list)?;
+    Ok((200, json!({ "ok": true })))
+}
+
+/// Dashboard numbers: 24 h counts, hourly blocked timeline, top blocked.
+fn stats(st: &Arc<UiState>) -> Reply {
+    let store = st.store.lock().unwrap();
+    let since = since_24h();
+    Ok((200, json!({
+        "counts_24h": store.counts_since(&since)?,
+        "timeline_24h": store.blocked_timeline(now_secs())?,
+        "top_blocked": store.top_blocked(&since, 8)?.into_iter().map(|mut v| { v["resource"] = json!(term_safe(v["resource"].as_str().unwrap_or_default())); v }).collect::<Vec<_>>(),
+    })))
+}
+
+/// Built-in protections, grouped, in plain words.
+fn builtins(st: &Arc<UiState>) -> Reply {
+    let project = project_of(None).unwrap_or_else(|_| PathBuf::from("/nonexistent"));
+    let c = draft::check(&st.paths, "claude-code", &project, Scope::User, None);
+    let disabled = c.as_ref().map(|c| c.policy.disabled_groups("claude-code", &project.to_string_lossy())).unwrap_or_default();
+    let raw = agentfence_policy::raw::parse_doc(
+        &agentfence_policy::set::builtin_sources(false).into_iter().find(|s| s.name == "protect-secrets").map(|s| s.yaml).unwrap_or_default(),
+        Layer::Builtin,
+        "protect-secrets",
+    )?;
+    let mut groups: Vec<(String, String, Vec<String>)> = vec![];
+    for r in &raw.filesystem.deny_read {
+        let id = r.id.clone().unwrap_or_default();
+        match groups.iter_mut().find(|g| g.0 == id) {
+            Some(g) => g.2.push(r.pattern.clone()),
+            None => groups.push((id, r.reason.clone().unwrap_or_default(), vec![r.pattern.clone()])),
+        }
+    }
+    Ok((200, json!({
+        "groups": groups.into_iter().map(|(id, reason, patterns)| json!({ "id": id, "reason": reason, "patterns": patterns, "enabled": !disabled.contains(&id), "can_disable": true })).collect::<Vec<_>>(),
+        "always_on": [
+            { "id": "exec-persistence", "reason": "Git config, git hooks, shell startup files, launch agents and agent settings can't be changed — they would run code outside the sandbox later." },
+            { "id": "agentfence-self", "reason": "Agents can't change AgentFence's rules, trust settings or audit log." },
+            { "id": "network", "reason": "All traffic goes through AgentFence's proxy; local and private network addresses are blocked unless a rule names them." },
+            { "id": "environment", "reason": "Secret-looking environment variables (tokens, keys, passwords) are withheld from agents." },
+        ],
+    })))
+}
+
+/// Stops a supervised agent (the supervisor forwards SIGTERM to it).
+fn stop(st: &Arc<UiState>, body: &Value) -> Reply {
+    let id = body["session"].as_str().context("session required")?;
+    let s = st.store.lock().unwrap().active_sessions()?.into_iter().find(|s| s.session_id == id).ok_or_else(|| anyhow!("no active session {id}"))?;
+    // Same checks and signal as `agentfence stop`.
+    supervisor::request_stop(supervisor::verified_supervisor(&s)?)?;
+    st.store.lock().unwrap().record_ui(&st.ctx, "session.stop_requested", id, "stop requested from the console")?;
+    Ok((200, json!({ "ok": true })))
+}
+
+/// Shows a path in Finder.
+fn reveal(body: &Value) -> Reply {
+    let p = body["path"].as_str().context("path required")?;
+    let path = std::fs::canonicalize(p)?;
+    let _ = std::process::Command::new("/usr/bin/open").arg("-R").arg(&path).status();
+    Ok((200, json!({ "ok": true })))
+}
+
 fn overview(st: &Arc<UiState>) -> Reply {
     let h = identity::human()?;
     let recent = st.store.lock().unwrap().recent_projects(20).unwrap_or_default();
-    let cwd_project = project_of(None).ok();
     Ok((200, json!({
         "human": h.user,
         "home": h.home,
@@ -91,7 +325,7 @@ fn overview(st: &Arc<UiState>) -> Reply {
         "state_dir": st.paths.state_dir,
         "config_dir": st.paths.config_dir,
         "user_policy": st.paths.user_policy,
-        "projects": cwd_project.into_iter().map(|p| p.to_string_lossy().into_owned()).chain(recent).collect::<BTreeSet<_>>(),
+        "projects": recent.into_iter().collect::<BTreeSet<_>>(),
         "agents": agentfence_core::agents::registry().iter().map(|p| json!({ "id": p.id(), "name": p.display_name() })).collect::<Vec<_>>(),
     })))
 }
@@ -107,7 +341,7 @@ fn session_list(st: &Arc<UiState>) -> Result<Vec<Value>> {
         let ident: agentfence_core::session::Session = match serde_json::from_str(&s.identity_json) {
             Ok(i) => i,
             Err(_) => {
-                out.push(json!({ "session": s.session_id, "agent": s.agent, "pid": s.agent_pid, "project": s.project, "stale": "unknown", "restartable": false }));
+                out.push(json!({ "session": s.session_id, "agent": s.agent, "pid": s.agent_pid, "supervisor_pid": s.supervisor_pid, "project": s.project, "stale": "unknown", "restartable": false, "sources": [] }));
                 continue;
             }
         };
@@ -117,6 +351,7 @@ fn session_list(st: &Arc<UiState>) -> Result<Vec<Value>> {
             "agent": s.agent,
             "agent_name": agentfence_core::agents::provider(&s.agent).map(|p| p.display_name().to_string()).unwrap_or(s.agent.clone()),
             "pid": s.agent_pid,
+            "supervisor_pid": s.supervisor_pid,
             "project": s.project,
             "policy": s.policy_name,
             "started_at": s.started_at,
@@ -142,11 +377,7 @@ fn restart(st: &Arc<UiState>, body: &Value) -> Reply {
     if !ident["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "restart")) {
         bail!("this session was started by an older agentfence without restart support; exit the agent and run it again");
     }
-    let exe = proc::facts(s.supervisor_pid).and_then(|f| f.exe).unwrap_or_default();
-    if !exe.ends_with("/agentfence") {
-        bail!("pid {} is no longer an agentfence supervisor", s.supervisor_pid);
-    }
-    supervisor::request_restart(s.supervisor_pid)?;
+    supervisor::request_restart(supervisor::verified_supervisor(&s)?)?;
     st.store.lock().unwrap().record_ui(&st.ctx, "session.restart_requested", id, "relaunch under current policy requested from the UI")?;
     Ok((200, json!({ "ok": true, "note": "The supervisor validates the new policy first; if it is invalid the agent keeps running and a restart.refused event appears." })))
 }
@@ -156,6 +387,10 @@ fn events(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
     let page: u64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
     let p = agentfence_core::audit::EventPage {
         session: q.get("session").cloned().filter(|s| !s.is_empty()),
+        agent: q.get("agent").cloned().filter(|s| !s.is_empty()),
+        project: q.get("project").cloned().filter(|s| !s.is_empty()),
+        policy: q.get("policy").cloned().filter(|s| !s.is_empty()),
+        since: q.get("since").cloned().filter(|s| !s.is_empty()),
         kind: q.get("kind").cloned().unwrap_or_else(|| "all".into()),
         search: q.get("q").cloned().unwrap_or_default(),
         offset: (page - 1) * size,
@@ -195,7 +430,7 @@ fn is_trusted(st: &Arc<UiState>, scope: Scope, project: &Path, bytes: Option<&[u
 
 fn get_policy(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
     let scope = scope_of(q.get("scope").map(String::as_str))?;
-    let project = project_of(q.get("project").map(String::as_str))?;
+    let project = scoped_project(scope, q.get("project").map(String::as_str))?;
     let agent = agent_of(q.get("agent").map(String::as_str));
     let bytes = draft::read_policy(&st.paths, scope, &project)?;
     let exists = bytes.is_some();
@@ -203,7 +438,12 @@ fn get_policy(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
     let yaml = match (&bytes, scope) {
         (Some(b), _) => String::from_utf8_lossy(b).into_owned(),
         // Seed a new user policy from the built-in default (policy-model §3).
-        (None, Scope::User) => agentfence_policy::set::builtin_sources(true).into_iter().find(|s| s.name == "default").map(|s| s.yaml).unwrap_or_default(),
+        // Renamed so the saved file reads as the user's own rules, not the built-in.
+        (None, Scope::User) => agentfence_policy::set::builtin_sources(true)
+            .into_iter()
+            .find(|s| s.name == "default")
+            .map(|s| s.yaml.replacen("\nname: default\n", "\nname: user\n", 1))
+            .unwrap_or_default(),
         (None, Scope::Project) => "version: v1\n".to_string(),
     };
     let check = draft::check(&st.paths, &agent, &project, scope, bytes.as_ref().map(|_| yaml.as_str()));
@@ -250,34 +490,81 @@ fn line_diff(old: &str, new: &str) -> Vec<Value> {
     out
 }
 
+/// What agents can do, independent of which file a rule lives in (so saving
+/// the seeded starter rules as the user policy is not reported as a change).
 fn rule_keys(rules: &[agentfence_core::enforce::RuleView]) -> BTreeSet<String> {
-    rules.iter().map(|r| format!("{} {} {} {} ({})", r.effect.as_str(), r.section, r.pattern, r.enforceability.as_str(), r.policy)).collect()
+    rules
+        .iter()
+        .map(|r| {
+            let except = if r.excepts.is_empty() { String::new() } else { format!(" except {}", r.excepts.join(", ")) };
+            format!("{} {} {} {}{except}", r.effect.as_str(), r.section, r.pattern, r.enforceability.as_str())
+        })
+        .collect()
+}
+
+/// Effective-rule changes for every known agent: `[{key, agents}]`, where
+/// `agents` is empty when the change applies to all of them.
+fn effective_diff(st: &Arc<UiState>, project: &Path, scope: Scope, yaml: &str) -> Value {
+    let ids: Vec<String> = agentfence_core::agents::registry().iter().map(|p| p.id().to_string()).collect();
+    let mut added: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut removed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for id in &ids {
+        let (Ok(b), Ok(a)) = (draft::check(&st.paths, id, project, scope, None), draft::check(&st.paths, id, project, scope, Some(yaml))) else { continue };
+        let (x, y) = (rule_keys(&b.rules), rule_keys(&a.rules));
+        for k in y.difference(&x) {
+            added.entry(k.clone()).or_default().push(id.clone());
+        }
+        for k in x.difference(&y) {
+            removed.entry(k.clone()).or_default().push(id.clone());
+        }
+    }
+    let list = |m: std::collections::BTreeMap<String, Vec<String>>| -> Vec<Value> {
+        m.into_iter().map(|(k, a)| json!({ "key": k, "agents": if a.len() == ids.len() { vec![] } else { a } })).collect()
+    };
+    json!({ "added": list(added), "removed": list(removed) })
+}
+
+/// Known projects where the draft user policy would leave some agent unable
+/// to read the project (policy-model §3), as "path (agent)".
+fn unreadable_elsewhere(st: &Arc<UiState>, yaml: &str) -> Vec<String> {
+    let mut projects: BTreeSet<String> = saved_projects(st).into_iter().collect();
+    if let Ok(v) = st.store.lock().unwrap().project_summaries("1970-01-01T00:00:00.000Z") {
+        projects.extend(v.into_iter().filter_map(|p| p["path"].as_str().map(str::to_string)));
+    }
+    let mut out = vec![];
+    for p in projects.into_iter().take(50) {
+        let path = PathBuf::from(&p);
+        if !path.is_dir() {
+            continue;
+        }
+        for prov in agentfence_core::agents::registry() {
+            if draft::check(&st.paths, prov.id(), &path, Scope::User, Some(yaml)).is_ok_and(|c| c.project_unreadable) {
+                out.push(format!("{p} ({})", prov.display_name()));
+            }
+        }
+    }
+    out
 }
 
 fn preview(st: &Arc<UiState>, body: &Value) -> Reply {
     let scope = scope_of(body["scope"].as_str())?;
-    let project = project_of(body["project"].as_str())?;
+    let project = scoped_project(scope, body["project"].as_str())?;
     let agent = agent_of(body["agent"].as_str());
     let yaml = draft_yaml(body, scope)?.context("yaml or doc required")?;
     let current = draft::read_policy(&st.paths, scope, &project)?;
     let cur_text = current.as_deref().map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
     let comments_lost = body["doc"].is_object() && cur_text.lines().any(|l| l.trim_start().starts_with('#'));
-    let before = draft::check(&st.paths, &agent, &project, scope, None).ok();
     match draft::check(&st.paths, &agent, &project, scope, Some(&yaml)) {
         Ok(c) => {
-            let (added, removed) = match &before {
-                Some(b) => {
-                    let (x, y) = (rule_keys(&b.rules), rule_keys(&c.rules));
-                    (y.difference(&x).cloned().collect::<Vec<_>>(), x.difference(&y).cloned().collect::<Vec<_>>())
-                }
-                None => (vec![], vec![]),
-            };
+            let elsewhere = if scope == Scope::User { unreadable_elsewhere(st, &yaml) } else { vec![] };
             Ok((200, json!({
                 "ok": true,
                 "yaml": yaml,
                 "doc": doc_json(&yaml, scope),
                 "effective": effective(&c),
-                "effective_diff": { "added": added, "removed": removed },
+                "effective_diff": effective_diff(st, &project, scope, &yaml),
+                "unreadable_projects": elsewhere,
+                "current_sha256": current.as_deref().map(agentfence_policy::set::sha256_hex),
                 "file_diff": line_diff(&cur_text, &yaml),
                 "comments_lost": comments_lost,
             })))
@@ -288,18 +575,31 @@ fn preview(st: &Arc<UiState>, body: &Value) -> Reply {
 
 fn save(st: &Arc<UiState>, body: &Value) -> Reply {
     let scope = scope_of(body["scope"].as_str())?;
-    let project = project_of(body["project"].as_str())?;
+    let project = scoped_project(scope, body["project"].as_str())?;
     let agent = agent_of(body["agent"].as_str());
     let yaml = draft_yaml(body, scope)?.context("yaml or doc required")?;
     let base = body["base_sha256"].as_str();
     let confirm = body["confirm"].as_array().is_some_and(|c| c.iter().any(|x| x == "project-unreadable"));
     let file = draft::policy_file(&st.paths, scope, &project);
+    if scope == Scope::User && !confirm {
+        let elsewhere = unreadable_elsewhere(st, &yaml);
+        if !elsewhere.is_empty() {
+            return Ok((409, json!({ "ok": false, "needs_confirm": ["project-unreadable"], "unreadable_projects": elsewhere, "error": "Saving this would stop agents from reading some projects. Confirm to save anyway." })));
+        }
+    }
     match draft::save(&st.paths, &agent, &project, scope, &yaml, base, confirm) {
         Ok(sha) => {
             st.store.lock().unwrap().record_ui(&st.ctx, "policy.saved", &file.to_string_lossy(), &format!("{} -> {sha}", base.unwrap_or("absent")))?;
+            // Sessions that loaded this file, plus sessions that didn't record
+            // their inputs (older AgentFence), which may have.
             let affected: Vec<Value> = session_list(st)?
                 .into_iter()
-                .filter(|s| s["sources"].as_array().is_some_and(|a| a.iter().any(|p| p.as_str().is_some_and(|p| Path::new(p) == file || supervisor::canon_or(Path::new(p)) == supervisor::canon_or(&file)))))
+                .filter_map(|mut s| {
+                    let uses = s["sources"].as_array().is_some_and(|a| a.iter().any(|p| p.as_str().is_some_and(|p| Path::new(p) == file || supervisor::canon_or(Path::new(p)) == supervisor::canon_or(&file))));
+                    let unknown = s["stale"] == "unknown";
+                    s["maybe"] = json!(!uses && unknown);
+                    (uses || unknown).then_some(s)
+                })
                 .collect();
             Ok((200, json!({ "ok": true, "sha256": sha, "affected_sessions": affected })))
         }
@@ -314,7 +614,7 @@ fn save(st: &Arc<UiState>, body: &Value) -> Reply {
 
 fn policy_for(st: &Arc<UiState>, body: &Value) -> Result<(agentfence_policy::set::PolicySet, String, PathBuf, Scope)> {
     let scope = scope_of(body["scope"].as_str())?;
-    let project = project_of(body["project"].as_str())?;
+    let project = scoped_project(scope, body["project"].as_str())?;
     let agent = agent_of(body["agent"].as_str());
     let yaml = draft_yaml(body, scope)?;
     let c = draft::check(&st.paths, &agent, &project, scope, yaml.as_deref())?;
@@ -336,18 +636,51 @@ fn map(st: &Arc<UiState>, body: &Value) -> Reply {
     let (set, agent, project, scope) = policy_for(st, body)?;
     let home = home()?;
     let ctx = files::Ctx { set: &set, agent: &agent, project: &project, home: &home, scope };
-    Ok((200, files::map_roots(&ctx)))
+    let mut v = files::map_roots(&ctx);
+    v["project"] = json!(project);
+    v["no_project"] = json!(project == Path::new(NO_PROJECT));
+    Ok((200, v))
 }
 
-/// Native macOS folder picker (the UI server runs locally as the user).
-fn pick_folder() -> Reply {
-    let out = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", "POSIX path of (choose folder with prompt \"Choose a project folder for AgentFence\")"])
-        .output()?;
+/// One path's node (decisions + rule actions), e.g. after picking it in Finder.
+fn fs_node(st: &Arc<UiState>, body: &Value) -> Reply {
+    let (set, agent, project, scope) = policy_for(st, body)?;
+    let home = home()?;
+    let ctx = files::Ctx { set: &set, agent: &agent, project: &project, home: &home, scope };
+    let raw = PathBuf::from(body["path"].as_str().context("path required")?);
+    if !raw.is_absolute() {
+        bail!("path must be absolute");
+    }
+    // Canonicalize the folder (what the kernel checks); keep the leaf so a
+    // symlink leaf is still shown as a link.
+    let p = match (raw.parent(), raw.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or(raw.clone()),
+        _ => raw.clone(),
+    };
+    let parent_link = p.parent().is_some_and(files::has_symlink_component);
+    Ok((200, files::node(&ctx, &p, None, parent_link)))
+}
+
+/// Native macOS picker (the UI server runs locally as the user). `purpose`:
+/// "project" (default; resolved like `run`), "folder" or "file" (returned
+/// as chosen, for rule paths).
+fn pick_folder(body: &Value) -> Reply {
+    let purpose = body["purpose"].as_str().unwrap_or("project");
+    let script = match purpose {
+        "project" => "POSIX path of (choose folder with prompt \"Choose a project folder for AgentFence\")",
+        "folder" => "POSIX path of (choose folder with prompt \"Choose a folder for this rule\")",
+        "file" => "POSIX path of (choose file with prompt \"Choose a file for this rule\" with invisibles)",
+        o => bail!("unknown purpose {o:?}"),
+    };
+    let out = std::process::Command::new("/usr/bin/osascript").args(["-e", script]).output()?;
     if !out.status.success() {
         return Ok((200, json!({ "cancelled": true })));
     }
     let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if purpose != "project" {
+        let p = chosen.trim_end_matches('/');
+        return Ok((200, json!({ "path": if p.is_empty() { "/" } else { p } })));
+    }
     match identity::resolve_project(Path::new(&chosen), None, &home()?) {
         Ok(p) => Ok((200, json!({ "path": p }))),
         Err(e) => Ok((200, json!({ "error": format!("{e:#}") }))),

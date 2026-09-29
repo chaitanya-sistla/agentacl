@@ -41,6 +41,8 @@ enum Command {
     Run(RunArgs),
     /// Relaunch a running session under the current policy (keeps the conversation where the agent supports it)
     Restart(RestartArgs),
+    /// Stop a supervised agent (its session ends and is recorded)
+    Stop(RestartArgs),
     /// Local policy UI in your browser (127.0.0.1 only)
     Ui(UiArgs),
 }
@@ -183,6 +185,7 @@ fn main() -> ExitCode {
             Command::Events(a) => events(&paths, a),
             Command::Run(a) => run(&paths, a),
             Command::Restart(a) => restart(&paths, a),
+            Command::Stop(a) => stop(&paths, a),
             Command::Ui(a) => ui::run(paths, ui::UiOptions { port: a.port, open: !a.no_open }),
         }
     })();
@@ -485,14 +488,27 @@ fn restart(paths: &Paths, a: RestartArgs) -> Result<i32> {
     if ident.get("agentfence_version").and_then(|v| v.as_str()).is_none() {
         bail!("session {} was started by an older agentfence without restart support; exit the agent and run it again", s.session_id);
     }
-    // Only signal a pid that is still an agentfence supervisor (guards pid reuse).
-    let f = proc::facts(s.supervisor_pid).context("supervisor is not running")?;
-    let exe = f.exe.unwrap_or_default();
-    if !exe.ends_with("/agentfence") {
-        bail!("pid {} is no longer an agentfence supervisor ({exe})", s.supervisor_pid);
-    }
-    agentfence_core::supervisor::request_restart(s.supervisor_pid)?;
+    // Only signal a pid that is still this session's supervisor (guards pid reuse).
+    let pid = agentfence_core::supervisor::verified_supervisor(s)?;
+    agentfence_core::supervisor::request_restart(pid)?;
     println!("Restart requested for {} ({}); it relaunches under the current policy.", s.session_id, agent_display(&s.agent));
+    Ok(0)
+}
+
+fn stop(paths: &Paths, a: RestartArgs) -> Result<i32> {
+    let store = Store::open(&paths.db_path)?;
+    let sessions = live_sessions(&store)?;
+    let s = match &a.session {
+        Some(id) => sessions.iter().find(|s| &s.session_id == id).with_context(|| format!("no active session {id}"))?,
+        None => match sessions.as_slice() {
+            [one] => one,
+            [] => bail!("no active sessions"),
+            _ => bail!("several sessions are active; pass one of: {}", sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>().join(", ")),
+        },
+    };
+    let pid = agentfence_core::supervisor::verified_supervisor(s)?;
+    agentfence_core::supervisor::request_stop(pid)?;
+    println!("Stop requested for {} ({}).", s.session_id, agent_display(&s.agent));
     Ok(0)
 }
 

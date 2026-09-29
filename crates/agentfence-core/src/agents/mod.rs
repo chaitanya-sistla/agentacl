@@ -154,6 +154,9 @@ pub struct RunningAgent {
     pub exe: Option<String>,
     pub version: Option<String>,
     pub confidence: Confidence,
+    /// Working directory (where the agent is working), if readable.
+    pub cwd: Option<String>,
+    pub started_us: u64,
 }
 
 pub fn path_lookup(cmd: &str) -> Option<PathBuf> {
@@ -195,7 +198,7 @@ pub fn running_agents(snap: &[ProcessFacts]) -> Vec<RunningAgent> {
                 _ => None,
             };
             let i = identify(p, sig.as_ref()).or(quick)?;
-            Some(RunningAgent { id: i.id, display_name: i.display_name, pid: p.pid, ppid: p.ppid, exe: p.exe.clone(), version: i.m.version, confidence: i.m.confidence })
+            Some(RunningAgent { id: i.id, display_name: i.display_name, pid: p.pid, ppid: p.ppid, exe: p.exe.clone(), version: i.m.version, confidence: i.m.confidence, cwd: crate::proc::cwd(p.pid), started_us: p.start_time_us })
         })
         .collect()
 }
