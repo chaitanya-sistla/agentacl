@@ -85,21 +85,6 @@ pub fn darwin_user_temp_dir() -> Result<PathBuf> {
     Ok(std::fs::canonicalize(&p)?)
 }
 
-#[derive(serde::Deserialize, Default)]
-struct TrustFile {
-    #[serde(default)]
-    trusted_project_policies: Vec<String>,
-}
-
-/// Reads `~/.config/agentfence/config.yaml` (`trusted_project_policies`).
-pub fn load_trust(paths: &Paths) -> Result<Vec<String>> {
-    match std::fs::read_to_string(&paths.trust_file) {
-        Ok(t) => Ok(serde_yaml_ng::from_str::<TrustFile>(&t).with_context(|| format!("parsing {}", paths.trust_file.display()))?.trusted_project_policies),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
-        Err(e) => Err(e.into()),
-    }
-}
-
 pub fn canon_or(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
@@ -183,7 +168,7 @@ pub fn load_policy_for_check(paths: &Paths, agent_id: &str, project: &Path, poli
         agentfence_state: canon_or(&paths.state_dir).to_string_lossy().into(),
         agentfence_config: canon_or(&paths.config_dir).to_string_lossy().into(),
     };
-    let mut lopts = LoadOptions { trusted_project_sha256: load_trust(paths)?, generated: vec![] };
+    let mut lopts = LoadOptions { trusted_project_sha256: crate::trust::hashes_for(paths, project)?, generated: vec![] };
     if agents::provider(agent_id).is_some() {
         lopts.generated.push(provider_doc(agent_id, &reqs));
     }
@@ -238,7 +223,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         session_doc.deny_write.push(canon_or(pf).to_string_lossy().into());
     }
 
-    let mut lopts = LoadOptions { trusted_project_sha256: load_trust(paths)?, generated: vec![] };
+    let mut lopts = LoadOptions { trusted_project_sha256: crate::trust::hashes_for(paths, &project)?, generated: vec![] };
     if provider.is_some() {
         lopts.generated.push(provider_doc(&agent.id, &reqs));
     }
@@ -296,7 +281,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         backend: backend.name().into(),
         started_at: now_rfc3339(),
         agentfence_version: Some(env!("CARGO_PKG_VERSION").into()),
-        policy_sources: policy_inputs(paths, opts, &project).iter().map(|p| crate::session::PolicyInput::current(p)).collect(),
+        policy_sources: policy_inputs(paths, opts, &project).into_iter().map(|p| crate::session::PolicyInput { sha256: input_sha(paths, &p), path: p }).collect(),
     };
     let watch = integrity::watch_list(&project, &session.human.home);
     Ok(Prepared { session, policy, reqs, rules, agent_argv, extra_denies, exec_deny_literals, socket_denies, watch, session_dir })
@@ -553,10 +538,25 @@ pub fn request_restart(pid: i32) -> Result<()> {
 /// session's (fixed) sandbox no longer matches the policy on disk.
 fn policy_inputs(paths: &Paths, opts: &RunOptions, project: &Path) -> Vec<PathBuf> {
     vec![
-        opts.policy_file.clone().unwrap_or_else(|| paths.user_policy.clone()),
-        paths.trust_file.clone(),
+        canon_or(&opts.policy_file.clone().unwrap_or_else(|| paths.user_policy.clone())),
         project.join(".agentfence/policy.yaml"),
+        // Only this project's trust entries, not the whole trust file.
+        PathBuf::from(format!("{}#{}", paths.trust_file.display(), project.display())),
     ]
+}
+
+/// Current fingerprint of a policy input: file bytes, or (for the virtual
+/// `config.yaml#<project>` input) that project's trust entries.
+pub fn input_sha(paths: &Paths, input: &Path) -> Option<String> {
+    let s = input.to_string_lossy();
+    match s.split_once('#') {
+        Some((_, project)) => crate::trust::fingerprint(paths, Path::new(project)),
+        None => std::fs::read(input).ok().map(|b| agentfence_policy::set::sha256_hex(&b)),
+    }
+}
+
+fn input_hashes(paths: &Paths, inputs: &[PathBuf]) -> Vec<Option<String>> {
+    inputs.iter().map(|i| input_sha(paths, i)).collect()
 }
 
 /// Runs the agent. `agentfence restart` (SIGUSR1 to this supervisor) stops the
@@ -600,7 +600,7 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
     let store = Store::open(&paths.db_path)?;
     let before: BTreeMap<PathBuf, Option<String>> = integrity::snapshot_hashes(&p.watch);
     let policy_files = policy_inputs(paths, opts, &s.project);
-    let policy_before = integrity::snapshot_hashes(&policy_files);
+    let policy_before = input_hashes(paths, &policy_files);
 
     // Sentinel for knowing the log stream is live / drained (must exist to be reported).
     let sentinel = p.session_dir.join("sentinel");
@@ -763,7 +763,7 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
     observer.stop();
     proxy.stop();
 
-    let policy_changed = !integrity::changed(&policy_before, &integrity::snapshot_hashes(&policy_files)).is_empty();
+    let policy_changed = policy_before != input_hashes(paths, &policy_files);
     let after = integrity::snapshot_hashes(&p.watch);
     let integrity_changes = integrity::changed(&before, &after);
     let st = live.store.lock().unwrap();

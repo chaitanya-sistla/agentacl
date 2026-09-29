@@ -68,6 +68,18 @@ struct AgentsArgs {
 enum PolicyCmd {
     /// Validate policies, show effective rules and their enforceability, or evaluate one request
     Check(PolicyCheckArgs),
+    /// Trust this project's .agentfence/policy.yaml (exact bytes, this project only) so it may grant access
+    Trust(TrustArgs),
+}
+
+#[derive(Args)]
+struct TrustArgs {
+    /// sha256 of the policy bytes you reviewed (shown by `agentfence policy check`)
+    #[arg(long)]
+    sha256: String,
+    /// Project root (default: git toplevel of the current directory)
+    #[arg(long)]
+    project: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -148,6 +160,13 @@ fn main() -> ExitCode {
             Command::Agents(a) => agents_cmd(&paths, a),
             Command::Status(a) => status(&paths, a.json),
             Command::Policy(PolicyCmd::Check(a)) => policy_check(&paths, a),
+            Command::Policy(PolicyCmd::Trust(a)) => {
+                let h = identity::human()?;
+                let project = identity::resolve_project(&std::env::current_dir()?, a.project.as_deref(), &h.home)?;
+                agentfence_core::trust::trust(&paths, &project, &a.sha256)?;
+                println!("Trusted {}/.agentfence/policy.yaml ({}) for this project only.", project.display(), a.sha256);
+                Ok(0)
+            }
             Command::Events(a) => events(&paths, a),
             Command::Run(a) => run(&paths, a),
             Command::Restart(a) => restart(&paths, a),
@@ -402,7 +421,19 @@ fn policy_check(paths: &Paths, a: PolicyCheckArgs) -> Result<i32> {
     }
     println!("POLICY CHECK  agent={}  project={}\n", a.agent, tilde(&proj, &home()));
     println!("Policy sha256: {}", set.sha256);
-    println!("Defaults:      filesystem={}  network={}  process={}\n", defaults.filesystem.as_str(), defaults.network.as_str(), defaults.process.as_str());
+    println!("Defaults:      filesystem={}  network={}  process={}", defaults.filesystem.as_str(), defaults.network.as_str(), defaults.process.as_str());
+    let pp = project.join(".agentfence/policy.yaml");
+    if let Ok(bytes) = std::fs::read(&pp) {
+        let sha = agentfence_policy::set::sha256_hex(&bytes);
+        let trusted = agentfence_core::trust::hashes_for(paths, &project).unwrap_or_default().contains(&sha);
+        println!("Project policy: {} sha256={sha} ({})", tilde(&pp.to_string_lossy(), &home()), if trusted { "trusted" } else { "restrict-only; trust with `agentfence policy trust --sha256 <sha>`" });
+    }
+    if let Ok(t) = agentfence_core::trust::load(paths) {
+        if t.legacy_ignored > 0 {
+            warnings.push(format!("{} legacy hash-only trust entries in config.yaml are ignored; re-trust with `agentfence policy trust`", t.legacy_ignored));
+        }
+    }
+    println!();
     let rows: Vec<Vec<String>> = views
         .iter()
         .map(|v| {

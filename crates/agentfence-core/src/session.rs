@@ -33,11 +33,8 @@ pub struct PolicyInput {
 }
 
 impl PolicyInput {
-    pub fn current(path: &std::path::Path) -> PolicyInput {
-        PolicyInput { path: path.to_path_buf(), sha256: std::fs::read(path).ok().map(|b| agentfence_policy::set::sha256_hex(&b)) }
-    }
-    pub fn is_stale(&self) -> bool {
-        PolicyInput::current(&self.path).sha256 != self.sha256
+    pub fn is_stale(&self, paths: &crate::config::Paths) -> bool {
+        crate::supervisor::input_sha(paths, &self.path) != self.sha256
     }
 }
 

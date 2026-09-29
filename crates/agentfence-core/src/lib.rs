@@ -12,3 +12,5 @@ pub mod session;
 pub mod observe;
 pub mod netproxy;
 pub mod supervisor;
+pub mod fsafe;
+pub mod trust;
