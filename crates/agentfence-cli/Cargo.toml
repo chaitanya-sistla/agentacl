@@ -1,0 +1,20 @@
+[package]
+name = "agentfence-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agentfence"
+path = "src/main.rs"
+
+[dependencies]
+agentfence-policy.workspace = true
+agentfence-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

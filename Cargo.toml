@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/agentfence-policy", "crates/agentfence-core", "crates/agentfence-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+agentfence-policy = { path = "crates/agentfence-policy" }
+agentfence-core = { path = "crates/agentfence-core" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+regex = "1"
+sha2 = "0.10"
+hex = "0.4"
+ulid = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+proptest = "1"
