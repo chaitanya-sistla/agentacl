@@ -26,9 +26,6 @@ filesystem:
         - "**/.git/COMMIT_EDITMSG"
         - "**/.git/packed-refs"
         - "**/.git/*.lock"
-        - "**/.git/rebase-merge/**"
-        - "**/.git/rebase-apply/**"
-        - "**/.git/sequencer/**"
       id: exec-persistence
       reason: "Git configuration and hooks run outside the sandbox and are protected"
 

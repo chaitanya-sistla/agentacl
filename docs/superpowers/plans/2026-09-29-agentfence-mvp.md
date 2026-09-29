@@ -11,7 +11,7 @@
 
 The spec lives in `docs/{architecture,threat-model,policy-model,macos-enforcement}.md`. When this plan and the docs disagree, the docs win, and the disagreement is fixed in whichever is wrong.
 
-**Tech Stack:** Rust 2021 (toolchain 1.93), clap 4, serde + serde_json, serde_yaml_ng 0.10, rusqlite 0.40 (`bundled`), ulid 3, sha2 0.11, regex 1, libc 0.2, anyhow/thiserror, tempfile + proptest (dev). No async runtime: the proxy and observers use std threads.
+**Tech Stack:** Rust 2021 (MSRV 1.85; toolchain 1.93), clap 4, serde + serde_json, serde_yaml_ng 0.10, rusqlite 0.37 (`bundled`), ulid 1, sha2 0.10 + hex, regex 1, libc 0.2, anyhow/thiserror, tempfile + proptest (dev). **Where the code (Tasks 1–6) and this plan's type sketches differ, the code wins**: `PolicyError` uses `doc` fields and has an `Invalid` variant, `NetPattern` is `Host{host,wildcard,port}`/`Addr{nets,port}`, provider documents are `set::GeneratedDoc`, and sources are `set::PolicySource`. No async runtime: the proxy and observers use std threads.
 
 **Deviation from the writing-plans template:** steps list exact interfaces and concrete test cases, not full implementation code. The code is written once, during execution, under TDD. Test cases are specified precisely enough that two engineers would write equivalent assertions.
 
@@ -27,6 +27,41 @@ The spec lives in `docs/{architecture,threat-model,policy-model,macos-enforcemen
 - Every renderer escapes C0/C1 control characters and ESC in paths, argv and reasons (threat T15b).
 - No web UI, SaaS, auth server, Docker, OPA, or ES implementation (the ES backend is a stub only).
 - Commit after each task: `feat(<area>): …`. Author is the repo owner only; no Claude co-author trailers or AI attribution anywhere.
+
+## Plan review 2 amendments (binding, cross-cutting)
+
+1. **Location protection generalized** (implemented in Task 6). Every explicit filesystem **deny**, read or write, implies a deny of unlink/rename/link on:
+   - the paths it matches
+   - every ancestor of the protected location, up to but excluding `/` (`PathPattern::protected_ancestors`)
+
+   This covers the verified move-out-and-back escape (`mv ~/.claude $TMPDIR/c; edit; mv back`, and the same with the whole project dir). The Seatbelt compiler emits `(deny file-write-unlink (literal A))` for every such ancestor, and `file-link` denies for the matched paths. Update policy-model §4 wording.
+2. **Log observer timing** (Tasks 11 and 13):
+   - Every sentinel path is `realpath`'d (`/private/var/...`).
+   - The sentinel is matched **before** the tree filter.
+   - A **start sentinel** is fired and awaited, max 3 s, before the agent is spawned.
+3. **Fail-closed proxy:** refuse anything that isn't `Effect::Allow` (deny **and** ask). Test with `defaults.network: ask`.
+4. **Globbed executable names** (`"terra* *"`) compile to a basename regex (`[^/]*` for `*`). Classification stays EnforcedCoarse only when the compiler emits a rule; anything else is Observed. A test pairs classify with compile for every process-rule shape.
+5. **`defaults.process: deny`** is rejected by the Seatbelt backend at `run`/`policy check`, with a clear error. It's not silently ignored.
+6. **Git:** `rebase-merge/**`, `rebase-apply/**` and `sequencer/**` are removed from the exec-persistence excepts, because rebase todo `exec` lines run unsandboxed. Interactive rebase inside a session fails; this is documented.
+7. **Claude plugin/hook scripts:** the claude provider adds `${HOME}/.claude/plugins/**` and `${HOME}/.claude/hooks/**` to `protected_configs`. At session start, core parses `~/.claude/settings.json` and `${PROJECT}/.claude/settings*.json` `hooks.*.hooks[].command`, and adds every absolute path found in them to deny_write. Unit-test the parser with a fixture.
+8. **Pty:** `Pty::open()` runs before `prepare` (its `slave_path` goes into `PrepareInput`). The master fd is `FD_CLOEXEC`. Test: a child that lists `/dev/fd` sees only 0, 1 and 2.
+9. `RuleView { policy, id, section, effect, pattern, excepts, reason, enforceability }` is defined in `enforce/mod.rs` (Task 10).
+10. The **trust file** `~/.config/agentfence/config.yaml` is `{ trusted_project_policies: [<sha256>, …] }`, parsed by `config::load_trust()` (Task 13), with a test.
+11. `Paths::session_tmp_root()` is deleted. The session TMPDIR lives under `DARWIN_USER_TEMP_DIR`, realpath'd.
+12. **Test validity** (Task 10):
+    - Mach-service denials are asserted with a helper binary (`tests/helpers/machlookup.c`, built by the test with `cc`) that calls `bootstrap_look_up` for each denied service and exits nonzero on failure. No `pbpaste` or `mdfind`.
+    - The T6 socket test also asserts that the profile text contains the `path-literal` deny.
+    - `nc -l` gets a positive control: with `network.listen: ["localhost:18778"]`, binding 18778 succeeds.
+    - The TIOCSTI test runs the helper on a pty and asserts `EPERM` specifically.
+    - Orphans: test both `nohup` and a `setsid` variant. A setsid'd process escapes `getsid` cleanup unless it's still in the tracked tree, so document this as residual T20.
+13. **Audit coverage** (Task 11): `op_to_action` maps `mach-lookup` → action `ipc.mach-lookup` (resource = service name) and unix-socket `network-outbound` → `network.connect` (resource = socket path). No kernel denial is dropped for having an unknown op: those are recorded with action `sandbox.<op>`. `KernelDenial` fields are private, and only `parse_ndjson_line` constructs one.
+14. **Environment secrets** (new threat T21, Task 13): before spawning, the supervisor strips env vars whose names match a built-in denylist:
+    - `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`
+    - `*_TOKEN`, `*_SECRET`, `*_SECRET_*`, `*_PASSWORD`, `*_API_KEY`
+    - `GITHUB_TOKEN`, `GH_TOKEN`
+    - `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`
+
+    Exceptions: the provider's `env_passthrough` (claude: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_*`) and `run --keep-env NAME` (repeatable, recorded in the session). The summary lists the names stripped, never the values. Test: `FOO_TOKEN=x agentfence run -- /bin/sh -c 'echo ${FOO_TOKEN:-unset}'` prints `unset`.
 
 ## File Structure
 

@@ -206,14 +206,20 @@ Algorithm, the same for every action:
 and destination), link, clone, and attribute/mode/ownership changes.
 `filesystem.read` covers open-for-read, readdir, and `readlink`.
 
-**A read-deny protects the file's location too.** Any `deny_read` rule
-implies a deny of *unlink, rename (as source) and link* on the matched paths
-and on each ancestor directory below the rule's anchor. Without this,
-`mv .env.production leak.txt && cat leak.txt` reads the secret (verified). The
-evaluator applies this rule, and the Seatbelt compiler emits the corresponding
-`file-write-unlink` / `file-link` denies. Glob rules like `/**/.env` have no
-fixed ancestors, but renaming a parent directory leaves the file matched by
-the same glob, so they need only the file-level deny.
+**A deny protects the location too.** Every explicit filesystem deny, read or
+write, implies a deny of *unlink, rename (as source) and link* on the paths it
+matches, and on **every ancestor directory** of the protected location, up to
+but excluding `/` (for a glob, that includes the glob's anchor directory).
+Without this, two bypasses were verified:
+- `mv .env.production leak.txt && cat leak.txt` reads the secret.
+- `mv ~/.claude $TMPDIR/c`, then editing `c/settings.json`, then moving the
+  directory back plants a hook. The same works with the whole project
+  directory and `.git/config`.
+
+The evaluator applies this rule, and the Seatbelt compiler emits the
+corresponding `file-write-unlink` / `file-link` denies. Globs anchored at `/`,
+like `/**/.env`, have no ancestors to protect: renaming a parent leaves the
+file matched by the same glob.
 
 **Fallback defaults.** If no applicable document sets a category default, it
 is `deny` for filesystem and network, and `allow` for process (which is
