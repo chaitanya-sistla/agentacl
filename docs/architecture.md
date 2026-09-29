@@ -350,6 +350,6 @@ access to it, because `sandbox-exec` reads the profile before exec.
 
 ## 10. Out of scope for iteration 1
 
-The ES extension implementation, NetworkExtension, a web UI, SaaS or remote
+The ES extension implementation, NetworkExtension, a hosted/remote UI (the local `agentfence ui` is specified in [ui.md](ui.md)), SaaS or remote
 policy distribution, authentication servers, Linux, OpenShell, OPA, interactive
 approval (see policy model §6), and TLS interception.
