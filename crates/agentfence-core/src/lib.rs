@@ -10,3 +10,4 @@ pub mod enforce;
 pub mod identity;
 pub mod session;
 pub mod observe;
+pub mod netproxy;

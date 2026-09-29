@@ -134,6 +134,8 @@ fn network_two_phase() {
     // IP literal targets go through phase 1 (default) first
     is(&host(&s, "8.8.8.8", 443), Effect::Deny, "default");
     is(&host(&s, "127.0.0.1", 3000), Effect::Allow, "user/network.allow/2");
+    is(&host(&s, "localhost", 3000), Effect::Allow, "user/network.allow/2");
+    is(&host(&s, "LOCALHOST", 3001), Effect::Deny, "default");
     let m = load(vec![user("version: v1\nnetwork:\n  allow: [\"169.254.169.254\", \"8.8.8.8\"]\n")]);
     is(&m.evaluate_address(&sj, "169.254.169.254".parse().unwrap(), 80), Effect::Allow, "user/network.allow/0");
     is(&host(&m, "8.8.8.8", 443), Effect::Allow, "user/network.allow/1");

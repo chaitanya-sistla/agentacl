@@ -94,7 +94,14 @@ impl PolicySet {
     }
 
     fn eval_host(&self, subj: &Subject, host: &str, port: u16) -> Decision {
-        if let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        // The hostname `localhost` is the loopback address: `localhost[:port]`
+        // entries (address patterns) must apply to it.
+        let literal = if host.eq_ignore_ascii_case("localhost") {
+            Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        } else {
+            host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>()
+        };
+        if let Ok(ip) = literal {
             // IP literal: phase 1 on address patterns + default, then the reserved-range phase.
             let matched: Vec<&Rule> = self
                 .net_rules(subj, Section::Net)
