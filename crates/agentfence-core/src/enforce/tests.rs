@@ -382,3 +382,31 @@ fn sandbox_blocks_tiocsti() {
     let got = run_on_pty(&helper, &[], |slave| Some(f.profile(&pol, CompileInput { pty_slave: Some(slave), ..input() })));
     assert_eq!(got, "Operation not permitted");
 }
+
+#[test]
+fn sandbox_cannot_read_other_processes_argv() {
+    let f = Fixture::new();
+    let helper = build_helper(&f, "procargs");
+    // A process in another session, like the human's other terminals.
+    use std::os::unix::process::CommandExt;
+    let mut other = unsafe {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+            .spawn()
+            .unwrap()
+    };
+    // control: outside the sandbox the argv is readable
+    let ctl = Command::new(&helper).arg(other.id().to_string()).output().unwrap();
+    assert!(String::from_utf8_lossy(&ctl.stdout).contains("procargs2=READ"));
+    let p = f.profile(&f.policy(None), input());
+    let (_, o) = f.run(&p, &format!("{} {}", helper.display(), other.id()));
+    other.kill().ok();
+    other.wait().ok();
+    assert!(o.contains("procargs2=denied"), "{o}");
+    assert!(o.contains("proc_all=denied"), "{o}");
+    assert!(o.contains("hw.ncpu=ok"), "{o}");
+}

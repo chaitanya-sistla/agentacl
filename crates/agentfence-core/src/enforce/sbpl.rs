@@ -237,5 +237,11 @@ pub fn compile_profile(policy: &PolicySet, input: &CompileInput) -> Result<Strin
     for op in NEVER_ALLOW {
         let _ = writeln!(out, "(deny {op}{})", tag("builtin", "never-allow")?);
     }
+    // Other processes' command lines and the process table. Verified: with
+    // plain `(allow sysctl-read)` a sandboxed process can read the argv of any
+    // same-uid process via KERN_PROCARGS2. Both denies are needed together;
+    // the agent's own session (self/pgrp/children) stays inspectable.
+    let _ = writeln!(out, "(deny process-info*{} (target others))", tag("builtin", "process-privacy")?);
+    let _ = writeln!(out, "(deny sysctl-read{} (sysctl-name-prefix \"kern.proc\"))", tag("builtin", "process-privacy")?);
     Ok(out)
 }

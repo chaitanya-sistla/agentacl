@@ -277,8 +277,13 @@ fn generated_raw(g: &GeneratedDoc) -> RawDoc {
         kind: crate::raw::RuleKind::Path,
         pattern: p.clone(),
         except: vec![],
-        id: None,
+        id: Some("runtime-requirement".into()),
         reason: Some(g.reason.clone()),
+    };
+    let protect = |p: &String| RawRule {
+        id: Some("protected-config".into()),
+        reason: Some("Agent configuration that runs code later is protected".into()),
+        ..rule(p)
     };
     let host = |p: &String| RawRule { kind: crate::raw::RuleKind::Host, ..rule(p) };
     let mut read = g.allow_read.clone();
@@ -292,7 +297,7 @@ fn generated_raw(g: &GeneratedDoc) -> RawDoc {
             allow_read: read.iter().map(rule).collect(),
             allow_write: g.allow_write.iter().map(rule).collect(),
             deny_read: vec![],
-            deny_write: g.deny_write.iter().map(rule).collect(),
+            deny_write: g.deny_write.iter().map(protect).collect(),
         },
         process: RawProc::default(),
         network: RawNet { allow: g.net_allow.iter().map(host).collect(), deny: vec![], listen: vec![] },
