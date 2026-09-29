@@ -47,6 +47,8 @@ pub struct RuntimeReqs {
     pub write: Vec<String>,
     pub hosts: Vec<String>,
     pub mach_services: Vec<String>,
+    /// Unix sockets the agent may connect to (e.g. the keychain check socket).
+    pub unix_sockets: Vec<String>,
     /// Environment variables passed through despite the secret-env denylist.
     pub env_passthrough: Vec<String>,
     /// Hook/MCP/plugin configs: write-denied (threat T19).

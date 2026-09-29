@@ -60,7 +60,16 @@ impl AgentProvider for Claude {
 
     fn runtime_requirements(&self) -> RuntimeReqs {
         RuntimeReqs {
-            read: vec![],
+            // Claude Code keeps its OAuth login in the macOS keychain. Reading the
+            // keychain files is required to log in; item access is still
+            // mediated by securityd and each item's ACL (threat T9). Users who
+            // prefer no keychain access can use ANTHROPIC_API_KEY instead.
+            read: vec![
+                "${HOME}/Library/Keychains/**".into(),
+                "/Library/Keychains/**".into(),
+                "/private/var/db/mds/messages/*/**".into(),
+                "/private/var/run/systemkeychaincheck.done".into(),
+            ],
             write: vec![
                 "${HOME}/.claude/**".into(),
                 "${HOME}/.claude.json".into(),
@@ -72,6 +81,7 @@ impl AgentProvider for Claude {
             ],
             hosts: vec!["api.anthropic.com".into(), "statsig.anthropic.com".into(), "claude.ai".into(), "console.anthropic.com".into()],
             mach_services: vec!["com.apple.SecurityServer".into(), "com.apple.securityd.xpc".into()],
+            unix_sockets: vec!["/private/var/run/systemkeychaincheck.socket".into()],
             env_passthrough: vec!["ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into(), "CLAUDE_CODE_*".into()],
             protected_configs: vec![
                 "${HOME}/.claude/settings.json".into(),

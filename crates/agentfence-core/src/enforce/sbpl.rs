@@ -24,6 +24,8 @@ pub struct CompileInput<'a> {
     pub exec_deny_literals: &'a [String],
     /// Unix sockets that must never be connected to (ssh-agent, docker).
     pub socket_denies: &'a [String],
+    /// Unix sockets the provider needs (e.g. keychain check).
+    pub socket_allows: &'a [String],
     /// Extra read+write-denied literals (other names of hard-linked secrets).
     pub extra_denies: &'a [String],
     /// Session pty slave (ioctl allowed).
@@ -159,6 +161,9 @@ pub fn compile_profile(policy: &PolicySet, input: &CompileInput) -> Result<Strin
     emit(&mut out, "allow file-ioctl", &ioctl);
 
     let _ = writeln!(out, "(allow network-outbound (remote ip \"localhost:{}\"))", input.proxy_port);
+    for sock in input.socket_allows {
+        let _ = writeln!(out, "(allow network-outbound (remote unix-socket (path-literal \"{}\")))", check(sock)?);
+    }
     for r in by(Section::Listen, &[Effect::Allow]) {
         let Matcher::Net(n @ NetPattern::Addr { .. }) = &r.matcher else { continue };
         let Some(port) = n.port() else { bail!("network.listen entry {:?} needs an explicit port", r.written) };

@@ -296,6 +296,7 @@ impl Prepared {
             mach_services: &self.reqs.mach_services,
             exec_deny_literals: &self.exec_deny_literals,
             socket_denies: &self.socket_denies,
+            socket_allows: &self.reqs.unix_sockets,
             extra_denies: &self.extra_denies,
             pty_slave,
             session_tag: &self.session.session_id,

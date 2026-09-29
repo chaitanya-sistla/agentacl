@@ -110,7 +110,7 @@ fn profile_invariants() {
     // network is never opened beyond the proxy, even with defaults.network: allow
     let open = f.policy(Some("version: v1\ndefaults: {network: allow, filesystem: deny}\n"));
     let t2 = sbpl::compile_profile(&open, &CompileInput { agent_id: "x", project: &f.project.to_string_lossy(), ..input() }).unwrap();
-    assert_eq!(t2.matches("(allow network-outbound").count(), 1);
+    assert_eq!(t2.matches("(allow network-outbound (remote ip").count(), 1);
     // builtins survive a user policy (invariant 5)
     for needle in [".ssh", "\\.[eE][nN][vV]", "AgentFence", "[gG][iI][tT]"] {
         assert!(t2.contains(needle), "{needle}");
