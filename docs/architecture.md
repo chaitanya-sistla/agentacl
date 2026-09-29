@@ -263,6 +263,8 @@ would be infrastructure without a job.
 | `agentfence status` | Backend in use and its capabilities, ES availability, active sessions and their effective policy |
 | `agentfence policy check [--agent A] [--project P]` | Validates and merges policies, prints every effective rule with its enforceability (`enforced` / `enforced-coarse` / `observed` / `requires-es`, policy-model §7), plus the Mach-service allowlist and provider runtime grants. `--path X --action read` evaluates a single request and prints the decision trace |
 | `agentfence events [--session S] [--decision deny] [--follow] [--json]` | Audit log. `--json` emits NDJSON, one event per line |
+| `agentfence ui` | Local policy UI on 127.0.0.1 ([ui.md](ui.md)) |
+| `agentfence policy trust --sha256 <sha> [--project P]` | Trust a project policy's exact bytes, bound to that project path |
 | `agentfence restart [session]` | Relaunches a running session under the current policy. The supervisor gets SIGUSR1, stops the agent (SIGTERM, then SIGKILL after 5 s), reloads policy, and relaunches with the provider's resume args (`claude --continue`). Each launch is a new session with its own id. Needed because a Seatbelt profile can't change after launch |
 | `agentfence run [opts] -- <cmd…>` | Supervised launch as in §5. `--dry-run` prints the identity, the compiled profile and the enforceability report without launching. `--keep-env NAME` passes a secret-looking env var through (T21). `--accept-hardlink PATH` acknowledges a hard link to a protected file (T2) |
 

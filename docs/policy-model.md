@@ -170,9 +170,12 @@ keys it may contain are:
 
 **Any other key** is a load error. That includes every `allow*`,
 `network.listen`, `builtin`, and `trusted_project_policies`. The only way
-past this is for the user to trust the file's exact SHA-256 in
-`~/.config/agentfence/config.yaml` (`trusted_project_policies`). Any change to
-the file invalidates the trust.
+past this is for the user to trust the file's exact SHA-256 **for that
+project path**, with `agentfence policy trust --sha256 <sha> [--project P]`.
+This records `{project, sha256}` in `~/.config/agentfence/config.yaml`
+(`trusted_project_policies`). Any change to the file invalidates the trust.
+The same bytes in another project are not trusted. Legacy hash-only entries
+are ignored.
 
 For the same reason, the sandbox profile denies the agent write access to
 `${PROJECT}/.agentfence/**`, all of `~/.config/agentfence/**` (user policy
