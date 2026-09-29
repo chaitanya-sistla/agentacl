@@ -91,6 +91,14 @@ impl CommandPattern {
         }
     }
 
+    /// The executable token when it is a basename (may contain `*`/`?`).
+    pub fn exe_basename_glob(&self) -> Option<&str> {
+        match &self.exe {
+            ExeMatch::Basename(_, name) => Some(name),
+            _ => None,
+        }
+    }
+
     pub fn exe_abs(&self) -> Option<&str> {
         match &self.exe {
             ExeMatch::Absolute(p) => Some(p),
