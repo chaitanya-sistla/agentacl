@@ -42,8 +42,11 @@ Non-goals:
   (`{pid, port, started}`, mode 0600, one file per instance) and removes it
   on exit. The proxy reads these files (§5, row 1).
 - **Implementation.** Rust, in `crates/agentfence-cli/src/ui/`, on `tiny_http`.
-  The front end is HTML, CSS and vanilla JS embedded with `include_str!`: no
-  build step, no CDN, and no network loads.
+  The front end is HTML, vanilla JS and **Tailwind CSS v4**, all embedded with
+  `include_str!`. Tailwind is compiled ahead of time by
+  `scripts/build-ui-css.sh` (standalone CLI, no Node) from `assets/tailwind.css`
+  into the committed `assets/app.css`. The page loads nothing from a CDN or the
+  network, and the CSP stays `'self'`-only.
 
 ## 3. Screens
 
