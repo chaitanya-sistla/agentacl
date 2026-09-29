@@ -240,6 +240,13 @@ Builtin YAML contents follow policy-model §5, §5.1 and exec-persistence **exac
 - [ ] `sha256` is stable across two loads, and changes when one rule changes.
 - [ ] Commit.
 
+**Amendments (plan review 1), binding for Task 5:**
+- `Vars` gains `agentfence_state: String` and `agentfence_config: String` (the canonical state and config dirs), available as `${AGENTFENCE_STATE}` and `${AGENTFENCE_CONFIG}`. `agentfence-self.yaml` deny_writes those two, plus `${PROJECT}/.agentfence/**`. When `--policy FILE` lies outside the config dir, `run` adds a literal deny_write for it.
+- Builtin excepts use the full `**/`-prefixed form relative to the rule anchor, e.g. `**/.git/objects/**`, `**/.git/index`, `**/.git/*.lock`. A relative except that doesn't start with `**/` is a load error.
+- **Provider requirements are policy.** `PolicySet::load` takes `provider: Option<ProviderDoc>` and turns `RuntimeReqs` into a Builtin-layer document named `provider:<id>`. `read`/`write` become allow rules, `hosts` becomes `network.allow`, and `protected_configs` becomes `deny_write`. Evaluation and attribution therefore agree with the profile. Test: with the claude provider doc, a write to `/u/.claude/projects/x` → allow `provider:claude-code`; a write to `/u/.claude/settings.json` → deny.
+- The trust hash is sha256 of the **raw file bytes**.
+- Rename the policy-crate `Source` to `PolicySource`, to avoid a clash with `audit::Source`.
+
 ### Task 6: Evaluator
 
 **Files:** `policy/src/eval.rs`, `policy/tests/{eval,props}.rs`
@@ -273,6 +280,11 @@ Algorithm (policy-model §4, §4.2), in order:
 - [ ] **props.rs (proptest):** random docs built from a small path alphabet, random requests. (a) If the decision is deny from an explicit rule, adding any allow rule to any doc leaves it deny. (b) Adding any deny rule never turns a decision into allow. (c) `evaluate` is deterministic: the same inputs give an identical `Decision` twice.
 - [ ] Commit.
 
+**Amendments (plan review 1), binding for Task 6:**
+- **IP-literal targets:** `Resource::Host` whose host parses as an IP is evaluated in phase 1 with address patterns, then the default. If the result is allow, phase 2 (the reserved-range check) runs on that same IP. Phase 2's final "else allow" is reached only after phase 1 allowed. Tests: `8.8.8.8:443` with no allow → deny `default`; `8.8.8.8:443` with allow `8.8.8.8` → allow; `127.0.0.1:3000` with a host allow `*.corp.com` only → deny.
+- `Decision.effect == Ask` for kernel-denied ask rules is recorded as `decision=ask` (Task 13), not `deny`.
+- Implied-deny test using a **user** doc that has only `deny_read: ["${HOME}/secret/**"]` (no deny_write), with `allow_write: ["${HOME}/**"]`: `FsWrite(Rename)` on `/u/secret/a` → deny; `FsWrite(Write)` on `/u/secret/a` → allow, because `deny_read` doesn't imply write-deny for plain writes.
+
 ### Task 7: Audit events and SQLite store
 
 **Files:** `core/src/audit/{mod,event,store}.rs`
@@ -305,6 +317,12 @@ pub trait EnforcedSink { fn enforced(&self, e: EnforcedEvent); }
 - [ ] Two `Store` handles on the same file can insert concurrently (WAL).
 - [ ] Commit.
 
+**Amendments (plan review 1), binding for Task 7:**
+- `Store::insert_event` is `pub(crate)`. Public entry points are `record_observed(ObservedEvent)`, `record_enforced(EnforcedEvent)` and `record_lifecycle(LifecycleEvent)` (session_start/session_end/backend_warning, with enforcement `None`).
+- `EnforcedEvent` can only be constructed through `EnforcedEvent::from_kernel_denial(&KernelDenial, …)` (defined in Task 11) and `EnforcedEvent::from_proxy(…)` (Task 12). Until those tasks land, the constructors live in `audit` behind `pub(crate)` and take the parsed denial/proxy data.
+- Test for invariant 4: `ObservedEvent` has no way to set enforcement (a compile-time property; document it with a doc comment); a lifecycle event has `enforcement: null`.
+- `Store::set_agent_pid(session_id, pid)`.
+
 ### Task 8: macOS process facts, tree, codesign, machine id
 
 **Files:** `core/src/proc/{mod,libproc,tree,codesign,machine}.rs`
@@ -335,6 +353,12 @@ Tree membership:
 - [ ] `code_signature("/usr/bin/true")` has `signing_id == Some("com.apple.true")`.
 - [ ] `machine_id()` matches `^mch_[0-9a-f]{16}$`.
 - [ ] Commit.
+
+**Amendments (plan review 1), binding for Task 8:**
+- `ProcessTree::new(root: ProcessFacts, root_label: String)`. No `agents::display_id` dependency.
+- `refresh` also reports **exec-in-place** changes on existing nodes: same (pid, start_time), different exe or argv. They're returned as `TreeChange::Exec(facts)` alongside `TreeChange::New(facts)`.
+- `pub fn resolve_ancestry(pid: i32) -> Vec<ProcessFacts>` walks ppid via libproc for pids the tree hasn't seen yet (unattributed-denial fallback).
+- `pub fn session_members(sid: i32) -> Vec<i32>` returns all pids with `getsid(pid) == sid`, for end-of-session cleanup.
 
 ### Task 9: Agent providers and discovery
 
@@ -447,6 +471,27 @@ The profile must never contain `(allow <NEVER_ALLOW item>` except the listen-sco
   - `/bin/sh -c 'echo ok'` → 0
 - [ ] Commit (`scripts/capture-baseline.sh`, the refined `runtime.yaml`, `baseline.rs`).
 
+**Amendments (plan review 1), binding for Task 10:**
+- **SBPL injection:** the compiler refuses (fail closed, error naming the path) any path or pattern containing `"`, `\`, or a control character. Regex bodies are ERE-escaped for all of `\.+()[]{}^$|` (already implemented in `pathpat::translate`). Golden test: a project dir named `p")(allow default)(` → `compile_profile` returns Err.
+- `PrepareInput` gains `exec_deny_literals: Vec<String>` (PATH-resolved), `pty_slave: String`, and `listen: Vec<NetPattern>`.
+- `/dev/ttys*` is **not** granted. The only terminal paths granted are `/dev/tty` and the literal `pty_slave`. Update policy-model §5.1 accordingly.
+- Signal rule, fixed: `(allow signal (target same-sandbox))` if that target parses (probe it first); else `(allow signal (target pgrp))` + `(target children)` + `(target self)`. Record the chosen form in `baseline.rs` with the probe result.
+- `defaults.network: allow` **never** emits `(allow network-outbound)` to anything but the proxy port. Test.
+- The profile invariant test also asserts that there's no `(allow network-bind` or `(allow network-inbound` when `network.listen` is empty.
+- Invariant 5 test: with a user policy present, the profile still contains the protect-secrets, exec-persistence and agentfence-self denies.
+- **Real-sandbox tests, rewritten:**
+  - The child env sets `HOME=$H` (the fake home), with a minimal `$H/.gitconfig`.
+  - Every negative case has a **positive control in the same profile** (`git -C $P status` → 0, `cat $P/README` → 0), and asserts the **on-disk effect** (`.git/config` unchanged, `.git` still a dir, `$H/.aws/credentials` still at its path) in addition to the exit code.
+  - The ancestor-rename test runs under a user policy `allow_write: ["${HOME}/**"]`: `mv $H/.aws $H/aws2` → fails, and `$H/aws2` doesn't exist.
+  - `nc -l -w1 127.0.0.1 18777` (bounded).
+  - Additional probes:
+    - T4: `echo x > $AGENTFENCE_STATE/x`, `> $CONFIG/policy.yaml`, `> $P/.agentfence/policy.yaml` → fail
+    - T6: `nc -U <fake agent socket>` → fail (the test creates a listening unix socket outside the sandbox)
+    - T7: `pbpaste` → fails or prints nothing, and `mdfind -name x` → fails. Plus: the profile contains no allow for launchservicesd/appleevents (no `open -a` probe, which would launch GUI apps)
+    - T15c: a tiny C/Rust helper doing `ioctl(TIOCSTI)` on its tty → EPERM
+    - T19: writes to `.git/hooks/x`, `.envrc`, `.mcp.json`, `.vscode/tasks.json`, `.claude/settings.json`, and `$H/.zshrc` and `$H/Library/LaunchAgents/x.plist` under a user policy with `allow_write: ${HOME}/**` → all fail
+    - `lsopen` / `job-creation`: covered by the never-allow profile assertion only
+
 ### Task 11: Sandbox-log observer
 
 **Files:** `core/src/observe/{mod,sandbox_log}.rs`, `core/tests/fixtures/sandbox_log/*.ndjson`
@@ -471,6 +516,9 @@ Parsing reads the field `processID` from the NDJSON object. The command's predic
 - [ ] A process name containing spaces and parens, `Sandbox: Codex (Service)(123) deny(1) file-read-data /x` → pid 123.
 - [ ] Live test: start the observer, run a sandboxed `cat` of a denied file, and receive a Denial within 5 s.
 - [ ] Commit.
+
+**Amendments (plan review 1), binding for Task 11:**
+- `log stream` prints a non-JSON header line (`Filtering the log data using …`). Lines that don't parse as JSON are `Ignored` silently. Only a JSON object with `processID == 0` whose message starts with `Sandbox:` but can't be parsed produces a `backend_warning`.
 
 ### Task 12: Network proxy
 
@@ -499,6 +547,10 @@ Behavior:
 - [ ] Allowed host resolving to 127.0.0.1 without an addr allow → 403 `reserved-range:loopback` (this uses the real PolicySet decider).
 - [ ] `GET http://a/ ` with `Host: b` → 400.
 - [ ] Commit.
+
+**Amendments (plan review 1), binding for Task 12:**
+- `pub struct PolicyNetDecider { policy: Arc<PolicySet>, subject: Subject }` implements `NetDecider`, and is defined here (not in Task 13). IP-literal CONNECT targets follow the Task 6 amendment. Proxy test: `CONNECT 8.8.8.8:443` under the default policy → 403 `default`, with no outbound connection attempted.
+- `EnforcedEvent::from_proxy(decision, host, port, subject)` is the proxy's only event constructor.
 
 ### Task 13: Supervisor (`run`)
 
@@ -549,6 +601,18 @@ pub fn changed(before, after) -> Vec<PathBuf>
 - [ ] `--dry-run` prints `seatbelt` and the enforceability table, and exits 0.
 - [ ] A project policy with `allow_read` → run exits nonzero with `ProjectForbidden`.
 - [ ] Commit.
+
+**Amendments (plan review 1), binding for Task 13:**
+- **Session TMPDIR** is `$(getconf DARWIN_USER_TEMP_DIR)/agentfence/<session>`, created 0700, **outside** the write-denied state dir. `profile.sb` is written next to it, in `…/agentfence/<session>.sb`, which isn't inside the TMPDIR.
+- **Drain before stop:** after the child exits, keep the log observer running until a **sentinel** is seen. The supervisor (outside the sandbox) triggers a known denial by running `sandbox-exec -p '(version 1)(allow default)(deny file-read-data (literal "<session tmp>/.sentinel"))' /bin/cat <that path>`. It waits for that line, capped at 3 s, and emits a `backend_warning` if the cap is hit.
+- **Exec-in-place:** handle `TreeChange::Exec`. The e2e ask test uses `$P/bin/git`, a script that sleeps 1 s, so the 100 ms poller can't miss it, and runs `PATH=$P/bin:$PATH sh -c 'git push origin main'`.
+- **Unattributed denials:** for an unknown pid, call `resolve_ancestry`. If any ancestor is a tree member, adopt the pid and attribute the denial. Otherwise record it with `session = "unattributed"`, but only if its path matches a deny rule.
+- **Cleanup:** the agent is a session leader (`setsid` on the pty). At the end, SIGTERM then SIGKILL every pid in `session_members(agent_sid)`, plus any live tracked tree member. Orphan test: `nohup sleep 31.337 >/dev/null 2>&1 &` inside the agent. After run returns, no process with argv `sleep 31.337` exists.
+- **Hard links:** only regular files (`S_ISREG`) are checked. The project walk builds a `(dev, ino) → paths` map, so the error names every path of a linked protected file.
+- **T19 diff test:** the agent appends to `$P/package.json` → the summary lists it under `REVIEW BEFORE RUNNING`.
+- **Ask decisions:** a kernel denial whose re-evaluation yields `Ask` is recorded `decision=ask, enforcement=enforced`.
+- **Wiring:** this task also wires `agentfence run` and a minimal `events --json` in the CLI, so its e2e tests can run. Task 14 adds the human rendering and the other commands.
+- **Types:** `Prepared { session: Session, policy: Arc<PolicySet>, plan: LaunchPlan, enforceability: Vec<(RuleView, Enforceability)>, reqs: RuntimeReqs }`; `Summary { denied: Vec<(String, String, u32)>, observed: Vec<Event>, integrity_changes: Vec<PathBuf>, events_total: u32 }`.
 
 ### Task 14: CLI commands
 

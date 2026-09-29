@@ -341,7 +341,7 @@ keeps it from regressing.
 - read+write: the **per-session** temp dir (a fresh 0700 dir, exported as
   `TMPDIR`; the user's shared `${TMPDIR}` is not granted), `/private/tmp/**`
   (compatibility; see T2 residual), `/dev/null`, `/dev/tty`,
-  `/dev/ttys*`, `/dev/ptmx`, `/dev/fd/**` (not `/dev/**`, which would include disk device nodes)
+  the session pty slave (literal path only; other `/dev/ttys*` are other terminals of the same user), `/dev/ptmx`, `/dev/fd/**` (not `/dev/**`)
 - from the provider's `runtime_requirements()`: the agent's own state, such as
   `~/.claude/**` and `~/.claude.json` (read+write) for Claude Code, and the
   hosts its API needs, such as `api.anthropic.com`
