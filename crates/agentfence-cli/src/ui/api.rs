@@ -2,7 +2,6 @@
 //! the UI adds no authority.
 
 use super::{files, UiState};
-use agentfence_core::audit::EventQuery;
 use agentfence_core::draft::{self, Scope, SaveError};
 use agentfence_core::escape::term_safe;
 use agentfence_core::{identity, proc, supervisor};
@@ -28,6 +27,8 @@ pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, S
         (Method::Post, "/api/policy/preview") => preview(st, body),
         (Method::Post, "/api/policy/save") => save(st, body),
         (Method::Post, "/api/fs/list") => fs_list(st, body),
+        (Method::Post, "/api/map") => map(st, body),
+        (Method::Post, "/api/pick-folder") => pick_folder(),
         (Method::Post, "/api/evaluate") => evaluate(st, body),
         _ => Ok((404, json!({ "error": "not found" }))),
     }
@@ -151,9 +152,23 @@ fn restart(st: &Arc<UiState>, body: &Value) -> Reply {
 }
 
 fn events(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
-    let after = q.get("after").and_then(|v| v.parse().ok());
-    let limit = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(200).min(1000);
-    let rows = st.store.lock().unwrap().events(&EventQuery { session: q.get("session").cloned(), decision: None, after_rowid: after, limit: Some(limit) })?;
+    let size: u64 = q.get("size").and_then(|v| v.parse().ok()).unwrap_or(25).clamp(1, 200);
+    let page: u64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let p = agentfence_core::audit::EventPage {
+        session: q.get("session").cloned().filter(|s| !s.is_empty()),
+        kind: q.get("kind").cloned().unwrap_or_else(|| "all".into()),
+        search: q.get("q").cloned().unwrap_or_default(),
+        offset: (page - 1) * size,
+        limit: size,
+    };
+    let store = st.store.lock().unwrap();
+    let (total, rows) = store.events_page(&p)?;
+    let since = {
+        let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        agentfence_core::audit::format_rfc3339(d.as_secs() as i64 - 86_400, 0)
+    };
+    let counts = store.counts_since(&since)?;
+    drop(store);
     let list: Vec<Value> = rows
         .into_iter()
         .map(|(rowid, e)| {
@@ -166,7 +181,7 @@ fn events(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
             v
         })
         .collect();
-    Ok((200, json!({ "events": list })))
+    Ok((200, json!({ "events": list, "total": total, "page": page, "size": size, "pages": total.div_ceil(size).max(1), "counts_24h": counts })))
 }
 
 fn effective(check: &draft::DraftCheck) -> Value {
@@ -308,9 +323,35 @@ fn policy_for(st: &Arc<UiState>, body: &Value) -> Result<(agentfence_policy::set
 
 fn fs_list(st: &Arc<UiState>, body: &Value) -> Reply {
     let (set, agent, project, scope) = policy_for(st, body)?;
+    let home = home()?;
+    let ctx = files::Ctx { set: &set, agent: &agent, project: &project, home: &home, scope };
     let dir = body["path"].as_str().filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or_else(|| project.clone());
-    let force = body["force"].as_bool().unwrap_or(false);
-    Ok((200, files::list(&set, &agent, &project, &home()?, scope, &dir, force)?))
+    let offset = body["offset"].as_u64().unwrap_or(0) as usize;
+    let limit = body["limit"].as_u64().unwrap_or(100) as usize;
+    Ok((200, files::children(&ctx, &dir, offset, limit, body["force"].as_bool().unwrap_or(false))?))
+}
+
+/// Access map roots (project, home, protected secrets, system).
+fn map(st: &Arc<UiState>, body: &Value) -> Reply {
+    let (set, agent, project, scope) = policy_for(st, body)?;
+    let home = home()?;
+    let ctx = files::Ctx { set: &set, agent: &agent, project: &project, home: &home, scope };
+    Ok((200, files::map_roots(&ctx)))
+}
+
+/// Native macOS folder picker (the UI server runs locally as the user).
+fn pick_folder() -> Reply {
+    let out = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", "POSIX path of (choose folder with prompt \"Choose a project folder for AgentFence\")"])
+        .output()?;
+    if !out.status.success() {
+        return Ok((200, json!({ "cancelled": true })));
+    }
+    let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    match identity::resolve_project(Path::new(&chosen), None, &home()?) {
+        Ok(p) => Ok((200, json!({ "path": p }))),
+        Err(e) => Ok((200, json!({ "error": format!("{e:#}") }))),
+    }
 }
 
 fn evaluate(st: &Arc<UiState>, body: &Value) -> Reply {

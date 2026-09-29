@@ -342,6 +342,55 @@ impl Store {
         rows.reverse();
         Ok(rows)
     }
+
+    /// One page of events, newest first, with the total matching count.
+    pub fn events_page(&self, p: &EventPage) -> Result<(u64, Vec<(i64, Event)>)> {
+        let mut filter = String::from(" WHERE 1=1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+        if let Some(s) = &p.session {
+            args.push(Box::new(s.clone()));
+            filter.push_str(&format!(" AND session_id = ?{}", args.len()));
+        }
+        match p.kind.as_str() {
+            "blocked" => filter.push_str(" AND enforcement = 'enforced' AND decision IN ('deny','ask')"),
+            "observed" => filter.push_str(" AND enforcement = 'observed'"),
+            "allowed" => filter.push_str(" AND decision = 'allow'"),
+            "system" => filter.push_str(" AND decision IS NULL"),
+            _ => {}
+        }
+        if !p.search.is_empty() {
+            args.push(Box::new(format!("%{}%", p.search.replace('%', "\\%").replace('_', "\\_"))));
+            let n = args.len();
+            filter.push_str(&format!(" AND (resource LIKE ?{n} ESCAPE '\\' OR action LIKE ?{n} ESCAPE '\\' OR IFNULL(rule_id,'') LIKE ?{n} ESCAPE '\\' OR agent LIKE ?{n} ESCAPE '\\')"));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let total: i64 = self.conn.query_row(&format!("SELECT COUNT(*) FROM events{filter}"), refs.as_slice(), |r| r.get(0))?;
+        let sql = format!("SELECT * FROM events{filter} ORDER BY rowid DESC LIMIT {} OFFSET {}", p.limit.clamp(1, 500), p.offset);
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map(refs.as_slice(), row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((total as u64, rows))
+    }
+
+    /// Counts for the overview cards since `since` (RFC 3339).
+    pub fn counts_since(&self, since: &str) -> Result<serde_json::Value> {
+        let q = |w: &str| -> rusqlite::Result<i64> { self.conn.query_row(&format!("SELECT IFNULL(SUM(count),0) FROM events WHERE ts >= ?1 AND {w}"), params![since], |r| r.get(0)) };
+        Ok(serde_json::json!({
+            "blocked": q("enforcement = 'enforced' AND decision IN ('deny','ask')")?,
+            "secrets": q("enforcement = 'enforced' AND decision IN ('deny','ask') AND policy = 'protect-secrets'")?,
+            "observed": q("enforcement = 'observed'")?,
+            "allowed": q("decision = 'allow'")?,
+        }))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EventPage {
+    pub session: Option<String>,
+    /// all | blocked | observed | allowed | system
+    pub kind: String,
+    pub search: String,
+    pub offset: u64,
+    pub limit: u64,
 }
 
 #[cfg(test)]
@@ -397,6 +446,29 @@ mod tests {
         let l = s.record_lifecycle(&ctx(), LifecycleEvent { kind: LifecycleKind::SessionEnd, pid: None, detail: String::new() }).unwrap();
         assert_eq!(l.enforcement, None);
         assert_eq!(l.decision, None);
+    }
+
+    #[test]
+    fn paging_and_filters() {
+        let (_d, s) = store();
+        for i in 0..30 {
+            let e = if i % 3 == 0 {
+                EnforcedEvent::from_kernel(&kd(i, &format!("/p/{i}.env")), vec![], decision(Effect::Deny), 1)
+            } else {
+                EnforcedEvent::proxy("network.connect".into(), format!("h{i}.com:443"), decision(Effect::Allow))
+            };
+            s.record_enforced(&ctx(), e).unwrap();
+        }
+        let (total, rows) = s.events_page(&EventPage { kind: "all".into(), limit: 7, offset: 0, ..Default::default() }).unwrap();
+        assert_eq!((total, rows.len()), (30, 7));
+        assert!(rows[0].0 > rows[6].0, "newest first");
+        let (total, _) = s.events_page(&EventPage { kind: "blocked".into(), limit: 50, ..Default::default() }).unwrap();
+        assert_eq!(total, 10);
+        let (total, rows) = s.events_page(&EventPage { kind: "all".into(), search: "h4.com".into(), limit: 50, ..Default::default() }).unwrap();
+        assert_eq!((total, rows[0].1.resource.as_str()), (1, "h4.com:443"));
+        let (_, last) = s.events_page(&EventPage { kind: "all".into(), limit: 7, offset: 28, ..Default::default() }).unwrap();
+        assert_eq!(last.len(), 2);
+        assert_eq!(s.counts_since("1970-01-01T00:00:00.000Z").unwrap()["blocked"], 10);
     }
 
     #[test]
