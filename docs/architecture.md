@@ -229,7 +229,7 @@ agentfence run [--project P] [--policy F] [--dry-run] -- claude [args…]
     supervisor relays bytes and window size to/from the human's TTY (threat model T15c, T5, T20)
  7. observe (supervisor threads, outside the sandbox):
       a. proc-tree poller          → process.exec events (observed; process rules evaluated → enforcement=observed)
-      b. `log stream` Sandbox       → kernel denials for pids in our tree → filesystem.* / process.exec events, decision=deny, enforcement=enforced
+      b. `log stream` Sandbox       → kernel denials tagged `af:<this session>|<policy>|<rule>` → events, enforcement=enforced
       c. netproxy decisions         → network.connect events, decision=allow|deny, enforcement=enforced
  8. forward SIGINT/SIGTERM/SIGWINCH via the pty;
     on child exit: SIGTERM→SIGKILL remaining tracked descendants, flush, `session_end`,
@@ -241,7 +241,6 @@ Code's TUI), so writing a box into its TTY would corrupt the screen. Instead:
 
 - Every decision lands in SQLite immediately, and `agentfence events --follow`
   in another pane shows the `AGENTFENCE DENIED` card live.
-- An optional `--notify` posts a macOS notification for each denial.
 - When the session ends, `run` prints a summary with counts, the top denied
   resources, and any observed-but-not-blocked policy violations.
 
@@ -264,7 +263,7 @@ would be infrastructure without a job.
 | `agentfence status` | Backend in use and its capabilities, ES availability, active sessions and their effective policy |
 | `agentfence policy check [--agent A] [--project P]` | Validates and merges policies, prints every effective rule with its enforceability (`enforced` / `enforced-coarse` / `observed` / `requires-es`, policy-model §7), plus the Mach-service allowlist and provider runtime grants. `--path X --action read` evaluates a single request and prints the decision trace |
 | `agentfence events [--session S] [--decision deny] [--follow] [--json]` | Audit log. `--json` emits NDJSON, one event per line |
-| `agentfence run [opts] -- <cmd…>` | Supervised launch as in §5. `--dry-run` prints the identity, the compiled profile and the enforceability report without launching |
+| `agentfence run [opts] -- <cmd…>` | Supervised launch as in §5. `--dry-run` prints the identity, the compiled profile and the enforceability report without launching. `--keep-env NAME` passes a secret-looking env var through (T21). `--accept-hardlink PATH` acknowledges a hard link to a protected file (T2) |
 
 ## 7. Repository layout
 

@@ -396,6 +396,10 @@ deadline makes that unsafe (see macos-enforcement.md).
 | `observed` | Evaluated on observed activity. Violations are logged with `enforcement=observed`, **not prevented** |
 | `requires-es` | Needs the Endpoint Security backend. Not evaluated at all under Seatbelt |
 
+`defaults.process: deny` is rejected by the Seatbelt backend. It would need an
+exec allowlist, so `run` refuses to start, and `policy check` warns.
+`network.listen` entries must name a loopback address **and** a port.
+
 For each rule shape, the Seatbelt backend classifies as follows:
 
 | Rule shape | Seatbelt |

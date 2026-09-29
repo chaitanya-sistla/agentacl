@@ -58,6 +58,7 @@ sandboxing in Claude Code and Codex on macOS.
 | Nested `sandbox-exec` inside `sandbox-exec` | **Fails for any real outer profile** (`sandbox_apply: Operation not permitted`; with `(deny default)` the log shows `forbidden-sandbox-reinit`). It only works under a bare `(allow default)` **[verified]**. Consequence: agents that sandbox their own commands (Codex's default mode, Claude Code's sandbox setting) would have every shell command fail. Each provider must declare how to switch off the agent's inner sandbox when AgentFence is the outer one (flag, env or settings override), and an E2E test covers it **[to verify per agent]** |
 | Hard link created **before** the session, then read inside it | **Readable: bypass** **[verified]**. Handled by the startup `st_nlink` check (threat model T2) |
 | Unix-socket connect deny `(remote unix-socket (path-literal …))` | Works, including via symlink/hard link to the socket **[verified]** |
+| `(with message "…")` on a deny, including `(deny default …)` | The message is appended to the kernel violation report; used for exact session/rule attribution **[verified]** |
 | Background process started by the agent, still running after the agent exits | Keeps running, still sandboxed, no longer audited **[verified]**. Handled by process-group kill at session end (T20) |
 | Kernel denials visible to an **unprivileged** `log stream --predicate 'sender == "Sandbox"'` | Yes: `Sandbox: cat(22304) deny(1) file-read-data /…/.env`, with pid, operation and path **[verified]** |
 
@@ -95,7 +96,7 @@ to act (T6, T7, T9). The initial policy:
 | Mach service | Decision | Why |
 |---|---|---|
 | `com.apple.system.opendirectoryd.membership`, `com.apple.bsd.dirhelper`, `com.apple.system.notification_center`, `com.apple.logd`, `com.apple.trustd*` (TLS verification), `com.apple.system.logger` | allow | Needed by shells, git and TLS clients (seen as denials in the review probes) |
-| `com.apple.SecurityServer` (keychain) | allow **only** if the provider requires it | Claude Code stores its login in the keychain. Allowing it exposes other keychain items subject to their ACLs (T9) |
+| `com.apple.SecurityServer` (keychain) | allow **only** if the provider requires it | Claude Code stores its login in the keychain. For Claude Code, the provider also grants read of `~/Library/Keychains/**`, `/Library/Keychains/**`, `/private/var/db/mds/messages/*/**`, and connect to `/private/var/run/systemkeychaincheck.socket`. Without these, login fails (verified). Item access stays mediated by securityd and item ACLs (T9). `policy check` lists these grants. Users who want no keychain exposure can use `ANTHROPIC_API_KEY` instead |
 | `com.apple.coreservices.launchservicesd`, `com.apple.coreservices.appleevents` | **deny** | `open -a` and Apple Events launch or drive unsandboxed apps (T7) |
 | `com.apple.pasteboard.1` | **deny** | Clipboard contents are often secrets |
 | `com.apple.metadata.mds*` | **deny** | A Spotlight query can return contents of protected files |
@@ -121,24 +122,36 @@ without it, any process that loads an image named `Sandbox` can forge a denial
 line (verified in review; threat model T15a). Only messages that **start with**
 `Sandbox: ` are parsed. The same stream also carries `System Policy: …` lines
 and `N duplicate report(s) for Sandbox: …` lines. The latter add N to the
-denial count of the matching event and never create a new decision. The
-supervisor then parses `Sandbox: <name>(<pid>) deny(<n>) <operation> <path>`, keeps
-only the pids in the session's process tree, re-evaluates the path against the
-policy to attribute `policy`/`rule_id`/`reason`, and writes an event with
-`decision=deny, enforcement=enforced`. If re-evaluation finds no matching rule,
-the denial came from `(deny default)`, and it's attributed to
-`rule_id: default`.
+denial count of the matching event and never create a new decision.
 
-This is honest: the event exists because the kernel reported a denial. The
-attribution step reuses the same deterministic evaluator.
+**Attribution comes from kernel-reported tags, not from process tracking**
+(implemented; this supersedes the earlier re-evaluation design). Every deny in
+the generated profile, including `(deny default)`, carries
+`(with message "af:<session>|<policy>|<rule>")`. The kernel appends that
+message to its violation report, on a new line after the path. We verified
+this on macOS 26.5.
+
+The supervisor accepts a denial only if its tag names *its own* session. The
+tag's policy and rule give the event's `policy`/`rule_id`, and the rule's
+reason is looked up in the loaded policy. So:
+
+- A process that lives for milliseconds (e.g. `cat .env`) is still
+  attributed. The tag is in the kernel's line, so the process doesn't have to
+  be alive when we read it.
+- Denials from other sessions or other sandboxed apps are ignored: wrong or
+  missing tag.
+- The agent can't alter the tags, because they're compiled into the profile
+  before exec. It can't forge kernel lines either (pid-0 check).
+
+The delegation chain is taken from the polled process tree when the pid is
+known. Otherwise it's `["<agent>", "…", "<process name>"]`: an honest partial
+chain.
 
 Known gaps, all **observability** gaps and never enforcement gaps:
 
-- A pid that exits before the tree poller sees it can't be attributed to the
-  session. The event is kept with `session=unattributed`, and it's kept only
-  when the path matches our deny rules.
 - The kernel rate-limits and deduplicates violation reports. The count of
-  denials is therefore a **lower bound**. **[to verify the dedup behavior]**
+  denials is therefore a **lower bound**. `N duplicate reports` lines are
+  added to the matching event's `count`.
 - The log format is not an API and could change in a macOS release. The parser
   is fixture-tested, and on a parse failure it emits a `backend_warning`
   event instead of dropping the denial silently.
@@ -282,7 +295,8 @@ daemon is down. It holds the last policy snapshot it received.
 | Process deny/ask with arguments (`git push *`) | **Observed only** | Enforced | MVP events are `enforcement=observed`, rendered as NOT BLOCKED |
 | Network host allowlist | **Enforced** (proxy + sandbox egress lock) | Same (+ NE later) | No TLS interception |
 | SSH-agent / Unix-socket use (docker.sock) | **Enforced** (env removed + `remote unix-socket` deny, verified) | Enforced (`AUTH_UIPC_CONNECT`) | |
-| Delegation chain in events | **Observed** (100 ms polling; short-lived processes can be missed) | Exact | Enforcement never depends on it |
+| Session/rule attribution of kernel denials | **Exact** (kernel-reported profile tags) | Exact | Independent of process polling |
+| Delegation chain in events | **Observed** (100 ms polling; intermediate hops of short-lived processes may show as `…`) | Exact | Enforcement never depends on it |
 | Agent identity of the launched binary | **Verified at launch** (path, SHA-256, code signature) | Continuous per exec | |
 | Agents **not** launched via `agentfence run` | **Observed only** (`discover`, `agents --all`) | Enforced | MVP can't restrict what it didn't launch |
 | Escape via launchd / Apple Events / other apps | **Not enforced until probes pass** (Mach-service allowlist, T7) | Partial (`AUTH_EXEC` can refuse `osascript`/`open`/`launchctl` for agent-tree processes) | Open item |
