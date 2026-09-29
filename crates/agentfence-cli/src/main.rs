@@ -520,9 +520,13 @@ fn run(paths: &Paths, a: RunArgs) -> Result<i32> {
     let summary = supervisor::run(paths, opts)?;
     let mut err = String::new();
     err.push_str(&format!("\nAgentFence session {} ended (exit {})\n", summary.session_id, summary.exit_code));
-    let blocked: u32 = summary.denied.iter().map(|d| d.3).sum();
-    err.push_str(&format!("  Blocked: {blocked}    Observed (not blocked): {}\n", summary.observed.len()));
-    for (action, resource, rule, n) in summary.denied.iter().take(10) {
+    err.push_str(&format!(
+        "  Blocked by policy: {}    Blocked by sandbox default: {}    Observed (not blocked): {}\n",
+        summary.denied_by_policy,
+        summary.denied_by_baseline,
+        summary.observed.len()
+    ));
+    for (action, resource, rule, n) in summary.denied.iter().take(8) {
         err.push_str(&format!("  BLOCKED   {:<16} {} ({rule}){}\n", action, term_safe(&tilde(resource, &home)), if *n > 1 { format!(" ×{n}") } else { String::new() }));
     }
     for (action, resource, rule) in summary.observed.iter().take(10) {

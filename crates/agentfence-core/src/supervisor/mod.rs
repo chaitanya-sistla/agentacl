@@ -55,7 +55,11 @@ pub struct Prepared {
 pub struct Summary {
     pub session_id: String,
     pub exit_code: i32,
+    /// (action, resource, policy/rule, count): explicit policy rules first, then by count.
     pub denied: Vec<(String, String, String, u32)>,
+    /// Denials by explicit policy rules vs. by the sandbox baseline / default deny.
+    pub denied_by_policy: u32,
+    pub denied_by_baseline: u32,
     pub observed: Vec<(String, String, String)>,
     pub integrity_changes: Vec<PathBuf>,
     pub stripped_env: Vec<String>,
@@ -214,8 +218,11 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
 
     // Per-session generated grants and protections.
     let mut session_doc = GeneratedDoc { name: "session".into(), reason: "AgentFence session requirement".into(), ..Default::default() };
-    if let Some(dir) = binary.parent() {
-        session_doc.allow_read.push(format!("{}/**", dir.display()));
+    // Read access to the agent's own install directory — but never to a
+    // directory as broad as `/`, $HOME or an ancestor of $HOME.
+    match binary.parent() {
+        Some(dir) if dir != Path::new("/") && !human.home.starts_with(dir) => session_doc.allow_read.push(format!("{}/**", dir.display())),
+        _ => session_doc.allow_read.push(binary.to_string_lossy().into_owned()),
     }
     let mut settings = vec![human.home.join(".claude/settings.json"), human.home.join(".claude/settings.local.json")];
     settings.push(project.join(".claude/settings.json"));
@@ -475,6 +482,11 @@ impl Live {
     }
 }
 
+/// Denials by the sandbox's default deny or baseline, as opposed to an explicit policy rule.
+pub fn is_baseline(policy: Option<&str>, rule: Option<&str>) -> bool {
+    matches!(policy, Some("seatbelt-baseline") | Some("fallback")) || matches!(rule, Some("default"))
+}
+
 /// If `exe` is a script interpreter running a script file, the script path.
 fn script_target(exe: &str, argv: &[String]) -> Option<String> {
     const INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "env", "python", "python3", "perl", "ruby", "node", "bun", "deno"];
@@ -701,10 +713,18 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
     let events = st.events(&EventQuery { session: Some(s.session_id.clone()), limit: Some(100_000), ..Default::default() })?;
     let mut denied: BTreeMap<(String, String, String), u32> = BTreeMap::new();
     let mut observed = Vec::new();
+    let (mut by_policy, mut by_baseline) = (0u32, 0u32);
     for (_, e) in &events {
         match (e.enforcement, e.decision) {
             (Some(Enforcement::Enforced), Some(Effect::Deny | Effect::Ask)) => {
-                *denied.entry((e.action.clone(), e.resource.clone(), e.rule_id.clone().unwrap_or_default())).or_default() += e.count;
+                let baseline = is_baseline(e.policy.as_deref(), e.rule_id.as_deref());
+                if baseline {
+                    by_baseline += e.count;
+                } else {
+                    by_policy += e.count;
+                }
+                let rule = format!("{}/{}", e.policy.clone().unwrap_or_default(), e.rule_id.clone().unwrap_or_default());
+                *denied.entry((e.action.clone(), e.resource.clone(), rule)).or_default() += e.count;
             }
             (Some(Enforcement::Observed), Some(Effect::Deny | Effect::Ask)) => {
                 observed.push((e.action.clone(), e.resource.clone(), e.rule_id.clone().unwrap_or_default()));
@@ -713,10 +733,17 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
         }
     }
     let warnings = live.warnings.lock().unwrap().clone();
+    let mut denied: Vec<(String, String, String, u32)> = denied.into_iter().map(|((a, r, id), n)| (a, r, id, n)).collect();
+    denied.sort_by_key(|(_, _, rule, n)| {
+        let (p, r) = rule.split_once('/').unwrap_or((rule, ""));
+        (is_baseline(Some(p), Some(r)), std::cmp::Reverse(*n))
+    });
     Ok(Summary {
         session_id: s.session_id.clone(),
         exit_code,
-        denied: denied.into_iter().map(|((a, r, id), n)| (a, r, id, n)).collect(),
+        denied,
+        denied_by_policy: by_policy,
+        denied_by_baseline: by_baseline,
         observed,
         integrity_changes,
         stripped_env: env.stripped,
