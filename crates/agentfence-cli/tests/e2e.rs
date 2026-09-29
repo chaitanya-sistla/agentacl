@@ -244,3 +244,31 @@ fn policy_change_hint() {
     let out = child.wait_with_output().unwrap();
     assert!(text(&out).contains("Policy changed during this session"), "{}", text(&out));
 }
+
+#[test]
+fn invalid_policy_restart_keeps_agent_running() {
+    let e = Env::new();
+    let script = "if [ -f marker ]; then echo relaunched; exit 0; fi; touch marker; echo first; sleep 30";
+    let mut c = e.cmd();
+    c.args(["run", "--", "/bin/sh", "-c", script]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if e.project.join("marker").exists() {
+            break;
+        }
+    }
+    // An invalid user policy (rejected by the seatbelt compiler).
+    e.user_policy("version: v1\ndefaults: {process: deny}\n");
+    assert!(e.cmd().arg("restart").output().unwrap().status.success());
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(child.try_wait().unwrap().is_none(), "agent must keep running after a refused restart");
+    let refused = e.events().iter().any(|v| v["action"] == "restart.refused");
+    assert!(refused, "restart.refused not recorded");
+    // Fix the policy and restart again: now it relaunches.
+    std::fs::remove_file(e.root.join("config/policy.yaml")).unwrap();
+    assert!(e.cmd().arg("restart").output().unwrap().status.success());
+    let out = child.wait_with_output().unwrap();
+    let t = text(&out);
+    assert!(t.contains("relaunched") && t.contains("restart refused"), "{t}");
+}

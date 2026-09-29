@@ -146,3 +146,24 @@ fn ip_literal_default_deny_and_ask_fail_closed() {
     let (_s, head) = send(p.port, "CONNECT example.com:443 HTTP/1.1\r\n\r\n");
     assert!(head.starts_with("HTTP/1.1 403"), "ask must be refused: {head}");
 }
+
+#[test]
+fn ui_port_is_always_refused() {
+    let up = echo_server();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(format!("ui-{}.json", std::process::id())), format!("{{\"pid\":{},\"port\":{up}}}", std::process::id())).unwrap();
+    let guard = Arc::new(UiPortGuard { state_dir: dir.path().to_path_buf() });
+    let p = NetProxy::start_guarded(real("version: v1\nnetwork:\n  allow: [\"localhost\", \"0.0.0.0\", \"::ffff:127.0.0.1\"]\n"), collect().0, Some(guard.clone())).unwrap();
+    for target in [format!("localhost:{up}"), format!("127.0.0.1:{up}"), format!("0.0.0.0:{up}"), format!("[::ffff:127.0.0.1]:{up}")] {
+        let (_s, head) = send(p.port, &format!("CONNECT {target} HTTP/1.1\r\n\r\n"));
+        assert!(head.starts_with("HTTP/1.1 403") && head.contains("agentfence-ui"), "{target}: {head}");
+    }
+    // other local ports stay governed by policy
+    let other = echo_server();
+    let (_s, head) = send(p.port, &format!("CONNECT 127.0.0.1:{other} HTTP/1.1\r\n\r\n"));
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    // unreadable state dir fails closed for loopback
+    let g2 = UiPortGuard { state_dir: "/private/var/root/nope".into() };
+    assert!(g2.check("127.0.0.1".parse().unwrap(), 1).is_some());
+    assert!(g2.check("93.184.216.34".parse().unwrap(), 443).is_none());
+}

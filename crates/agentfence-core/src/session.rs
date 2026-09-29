@@ -20,6 +20,9 @@ pub struct Session {
     /// Version of the supervisor; `restart` requires one that handles SIGUSR1.
     #[serde(default)]
     pub agentfence_version: Option<String>,
+    /// Supervisor capabilities, e.g. "restart", "ui-port-deny".
+    #[serde(default)]
+    pub features: Vec<String>,
     /// Policy files this session was built from (for stale detection).
     #[serde(default)]
     pub policy_sources: Vec<PolicyInput>,

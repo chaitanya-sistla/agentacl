@@ -143,6 +143,8 @@ pub enum LifecycleKind {
     BackendWarning,
     /// The policy files (path + sha) a session was built from.
     PolicyInputs,
+    /// `agentfence restart` asked for a relaunch but the new policy is invalid.
+    RestartRefused,
 }
 
 impl LifecycleKind {
@@ -152,6 +154,7 @@ impl LifecycleKind {
             LifecycleKind::SessionEnd => "session_end",
             LifecycleKind::BackendWarning => "backend_warning",
             LifecycleKind::PolicyInputs => "policy.inputs",
+            LifecycleKind::RestartRefused => "restart.refused",
         }
     }
 }

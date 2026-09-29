@@ -42,6 +42,49 @@ impl NetDecider for PolicyNetDecider {
 
 pub type EventFn = Arc<dyn Fn(EnforcedEvent) + Send + Sync>;
 
+/// Refuses connections to a running `agentfence ui` (ui.md §5): any loopback or
+/// unspecified destination on a port listed in a live `ui-<pid>.json` in the
+/// state dir, whatever the policy says. If the state dir cannot be read, all
+/// loopback/unspecified destinations are refused (fail closed).
+pub struct UiPortGuard {
+    pub state_dir: std::path::PathBuf,
+}
+
+impl UiPortGuard {
+    fn is_local(ip: IpAddr) -> bool {
+        let ip = agentfence_policy::netpat::normalize(ip);
+        ip.is_loopback() || ip.is_unspecified()
+    }
+
+    /// `Some(refusal)` if this destination must be refused.
+    pub fn check(&self, ip: IpAddr, port: u16) -> Option<Decision> {
+        if !Self::is_local(ip) {
+            return None;
+        }
+        let refuse = |why: String| Some(Decision { effect: Effect::Deny, policy: "builtin".into(), rule_id: "agentfence-ui".into(), reason: why, trace: vec![] });
+        let rd = match std::fs::read_dir(&self.state_dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(_) => return refuse("AgentFence state is unreadable; local connections are refused".into()),
+        };
+        for ent in rd.flatten() {
+            let name = ent.file_name().to_string_lossy().into_owned();
+            if !(name.starts_with("ui-") && name.ends_with(".json")) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(ent.path()) else { return refuse("AgentFence UI lock is unreadable; local connections are refused".into()) };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            let (Some(pid), Some(p)) = (v["pid"].as_i64(), v["port"].as_u64()) else { continue };
+            // SAFETY: kill(pid, 0) only checks existence.
+            let alive = unsafe { libc::kill(pid as i32, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            if alive && p == port as u64 {
+                return refuse("Connections to the AgentFence policy UI are never permitted to agents".into());
+            }
+        }
+        None
+    }
+}
+
 pub struct NetProxy {
     pub port: u16,
     stop: Arc<AtomicBool>,
@@ -52,6 +95,10 @@ const MAX_HEAD: usize = 32 * 1024;
 
 impl NetProxy {
     pub fn start(decider: Arc<dyn NetDecider>, on_event: EventFn) -> Result<NetProxy> {
+        Self::start_guarded(decider, on_event, None)
+    }
+
+    pub fn start_guarded(decider: Arc<dyn NetDecider>, on_event: EventFn, guard: Option<Arc<UiPortGuard>>) -> Result<NetProxy> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let stop = Arc::new(AtomicBool::new(false));
@@ -62,9 +109,9 @@ impl NetProxy {
                     break;
                 }
                 let Ok(conn) = conn else { continue };
-                let (d, e) = (decider.clone(), on_event.clone());
+                let (d, e, g) = (decider.clone(), on_event.clone(), guard.clone());
                 std::thread::spawn(move || {
-                    let _ = handle_conn(conn, d.as_ref(), e.as_ref());
+                    let _ = handle_conn(conn, d.as_ref(), e.as_ref(), g.as_deref());
                 });
             }
         });
@@ -155,7 +202,7 @@ fn norm_host(h: &str) -> String {
 }
 
 /// Two-phase decision. Returns the checked addresses to connect to, or the refusing decision.
-fn decide(d: &dyn NetDecider, host: &str, port: u16) -> std::result::Result<(Vec<SocketAddr>, Decision), Decision> {
+fn decide(d: &dyn NetDecider, guard: Option<&UiPortGuard>, host: &str, port: u16) -> std::result::Result<(Vec<SocketAddr>, Decision), Decision> {
     let host_decision = d.host(host, port);
     if host_decision.effect != Effect::Allow {
         return Err(host_decision);
@@ -176,6 +223,9 @@ fn decide(d: &dyn NetDecider, host: &str, port: u16) -> std::result::Result<(Vec
         return Err(Decision { effect: Effect::Deny, policy: "proxy".into(), rule_id: "resolve-failed".into(), reason: format!("{host} has no addresses"), trace: vec![] });
     }
     for a in &addrs {
+        if let Some(refusal) = guard.and_then(|g| g.check(a.ip(), port)) {
+            return Err(refusal);
+        }
         let ad = d.addr(a.ip(), port);
         if ad.effect != Effect::Allow {
             return Err(ad);
@@ -208,7 +258,7 @@ fn splice(a: TcpStream, b: TcpStream) {
     let _ = t.join();
 }
 
-fn handle_conn(mut c: TcpStream, d: &dyn NetDecider, on_event: &(dyn Fn(EnforcedEvent) + Send + Sync)) -> std::io::Result<()> {
+fn handle_conn(mut c: TcpStream, d: &dyn NetDecider, on_event: &(dyn Fn(EnforcedEvent) + Send + Sync), guard: Option<&UiPortGuard>) -> std::io::Result<()> {
     c.set_read_timeout(Some(Duration::from_secs(30)))?;
     let Some(head) = read_head(&mut c)? else { return Ok(()) };
     let event = |host: &str, port: u16, dec: Decision| on_event(EnforcedEvent::proxy("network.connect".into(), format!("{host}:{port}"), dec));
@@ -219,7 +269,7 @@ fn handle_conn(mut c: TcpStream, d: &dyn NetDecider, on_event: &(dyn Fn(Enforced
             return Ok(());
         };
         let host = norm_host(&host);
-        match decide(d, &host, port) {
+        match decide(d, guard, &host, port) {
             Err(dec) => {
                 respond(&mut c, "403 Forbidden", &format!("{} ({}/{})", dec.reason, dec.policy, dec.rule_id));
                 event(&host, port, dec);
@@ -264,7 +314,7 @@ fn handle_conn(mut c: TcpStream, d: &dyn NetDecider, on_event: &(dyn Fn(Enforced
             return Ok(());
         }
     }
-    match decide(d, &host, port) {
+    match decide(d, guard, &host, port) {
         Err(dec) => {
             respond(&mut c, "403 Forbidden", &format!("{} ({}/{})", dec.reason, dec.policy, dec.rule_id));
             event(&host, port, dec);

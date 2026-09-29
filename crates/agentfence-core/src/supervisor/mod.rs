@@ -281,10 +281,18 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         backend: backend.name().into(),
         started_at: now_rfc3339(),
         agentfence_version: Some(env!("CARGO_PKG_VERSION").into()),
+        features: vec!["restart".into(), "ui-port-deny".into()],
         policy_sources: policy_inputs(paths, opts, &project).into_iter().map(|p| crate::session::PolicyInput { sha256: input_sha(paths, &p), path: p }).collect(),
     };
     let watch = integrity::watch_list(&project, &session.human.home);
-    Ok(Prepared { session, policy, reqs, rules, agent_argv, extra_denies, exec_deny_literals, socket_denies, watch, session_dir })
+    let p = Prepared { session, policy, reqs, rules, agent_argv, extra_denies, exec_deny_literals, socket_denies, watch, session_dir };
+    // Compile once now so every compiler-only error (e.g. `defaults.process:
+    // deny`, a listen entry without a port) surfaces before anything launches.
+    if let Err(e) = crate::enforce::sbpl::compile_profile(&p.policy, &p.compile_input(0, None)) {
+        p.cleanup();
+        return Err(e);
+    }
+    Ok(p)
 }
 
 impl Prepared {
@@ -569,25 +577,33 @@ pub fn run(paths: &Paths, mut opts: RunOptions, mut on_session_end: impl FnMut(&
         let h = on_restart as extern "C" fn(libc::c_int) as *const () as libc::sighandler_t;
         libc::signal(libc::SIGUSR1, h);
     }
+    RESTART_REQUESTED.store(false, Ordering::SeqCst);
+    let mut prepared = prepare(paths, &opts)?;
     loop {
-        RESTART_REQUESTED.store(false, Ordering::SeqCst);
-        let prepared = prepare(paths, &opts)?;
-        let result = run_prepared(paths, &opts, &prepared);
-        prepared.cleanup();
-        let summary = result?;
-        on_session_end(&summary);
-        if !summary.restarted {
-            return Ok(summary.exit_code);
-        }
+        // The relaunch is prepared (and validated) while the agent still runs;
+        // the agent is stopped only if this succeeds (ui.md §4.7).
+        let mut next_opts = opts.clone();
         for a in &prepared.reqs.resume_args {
-            if !opts.argv.iter().skip(1).any(|x| x == a) {
-                opts.argv.push(a.clone());
+            if !next_opts.argv.iter().skip(1).any(|x| x == a) {
+                next_opts.argv.push(a.clone());
             }
+        }
+        let mut try_next = || prepare(paths, &next_opts);
+        let result = run_prepared(paths, &opts, &prepared, &mut try_next);
+        prepared.cleanup();
+        let (summary, next) = result?;
+        on_session_end(&summary);
+        match next {
+            Some(n) => {
+                prepared = n;
+                opts = next_opts;
+            }
+            None => return Ok(summary.exit_code),
         }
     }
 }
 
-fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summary> {
+fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared, try_next: &mut dyn FnMut() -> Result<Prepared>) -> Result<(Summary, Option<Prepared>)> {
     let s = &p.session;
     let ctx = EventContext {
         human: s.human.user.clone(),
@@ -622,13 +638,15 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
     // Proxy.
     let decider = Arc::new(crate::netproxy::PolicyNetDecider { policy: p.policy.clone(), subject: p.subject() });
     let live_p = live.clone();
-    let proxy = crate::netproxy::NetProxy::start(
+    let guard = Arc::new(crate::netproxy::UiPortGuard { state_dir: canon_or(&paths.state_dir) });
+    let proxy = crate::netproxy::NetProxy::start_guarded(
         decider,
         Arc::new(move |e: EnforcedEvent| {
             if let Ok(st) = live_p.store.lock() {
                 let _ = st.record_enforced(&live_p.ctx, e);
             }
         }),
+        Some(guard),
     )?;
 
     // Profile + launch plan.
@@ -715,13 +733,29 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
         libc::signal(libc::SIGTERM, h);
         libc::signal(libc::SIGHUP, h);
     }
-    let mut restarted = false;
+    let mut next: Option<Prepared> = None;
     let mut stop_deadline: Option<Instant> = None;
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break st;
         }
-        if TERM_REQUESTED.swap(false, Ordering::SeqCst) || (RESTART_REQUESTED.swap(false, Ordering::SeqCst) && { restarted = true; true }) {
+        let mut stop = TERM_REQUESTED.swap(false, Ordering::SeqCst);
+        if RESTART_REQUESTED.swap(false, Ordering::SeqCst) && next.is_none() && stop_deadline.is_none() {
+            match try_next() {
+                Ok(n) => {
+                    next = Some(n);
+                    stop = true;
+                }
+                Err(e) => {
+                    let msg = format!("restart refused, the agent keeps running under its current policy: {e:#}");
+                    if let Ok(st) = live.store.lock() {
+                        let _ = st.record_lifecycle(&ctx, LifecycleEvent { kind: LifecycleKind::RestartRefused, pid: None, detail: crate::escape::term_safe(&msg) });
+                    }
+                    live.warnings.lock().unwrap().push(msg);
+                }
+            }
+        }
+        if stop {
             // SAFETY: signal the agent's process group (it is a session leader).
             unsafe { libc::kill(-agent_pid, libc::SIGTERM) };
             stop_deadline.get_or_insert(Instant::now() + Duration::from_secs(5));
@@ -797,12 +831,13 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
         }
     }
     let warnings = live.warnings.lock().unwrap().clone();
+    let restarted = next.is_some();
     let mut denied: Vec<(String, String, String, u32)> = denied.into_iter().map(|((a, r, id), n)| (a, r, id, n)).collect();
     denied.sort_by_key(|(_, _, rule, n)| {
         let (p, r) = rule.split_once('/').unwrap_or((rule, ""));
         (is_baseline(Some(p), Some(r)), std::cmp::Reverse(*n))
     });
-    Ok(Summary {
+    Ok((Summary {
         session_id: s.session_id.clone(),
         exit_code,
         denied,
@@ -816,5 +851,5 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
         integrity_changes,
         stripped_env: env.stripped,
         warnings,
-    })
+    }, next))
 }
