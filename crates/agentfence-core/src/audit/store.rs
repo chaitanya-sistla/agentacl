@@ -295,6 +295,23 @@ impl Store {
         Ok(e)
     }
 
+    /// Records an action taken through the local UI (`source: ui`).
+    pub fn record_ui(&self, ctx: &EventContext, action: &str, resource: &str, reason: &str) -> Result<Event> {
+        let mut e = Self::base(ctx, EventSource::Ui);
+        e.action = action.into();
+        e.resource = resource.into();
+        e.reason = Some(reason.into());
+        self.insert_event(&e)?;
+        Ok(e)
+    }
+
+    /// Distinct projects of recent sessions, newest first.
+    pub fn recent_projects(&self, limit: usize) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT project, MAX(started_at) AS t FROM sessions GROUP BY project ORDER BY t DESC LIMIT ?1")?;
+        let rows = st.query_map(params![limit as i64], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn bump_count(&self, event_id: &str, n: u32) -> Result<()> {
         self.conn.execute("UPDATE events SET count = count + ?2 WHERE id = ?1", params![event_id, n])?;
         Ok(())

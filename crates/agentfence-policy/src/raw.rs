@@ -4,16 +4,17 @@
 
 use crate::error::PolicyError;
 use crate::model::{Effect, Layer};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RuleKind {
     Path,
     Command,
     Host,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawRule {
     pub kind: RuleKind,
     pub pattern: String,
@@ -41,7 +42,7 @@ struct RuleObject {
     reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RawMatch {
     #[serde(default)]
@@ -50,7 +51,7 @@ pub struct RawMatch {
     pub projects: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RawDefaults {
     pub filesystem: Option<Effect>,
@@ -93,7 +94,7 @@ struct NetRepr {
     listen: Vec<RuleRepr>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RawBuiltin {
     #[serde(default)]
@@ -115,7 +116,8 @@ struct DocRepr {
     builtin: Option<RawBuiltin>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawFs {
     pub allow_read: Vec<RawRule>,
     pub allow_write: Vec<RawRule>,
@@ -123,21 +125,23 @@ pub struct RawFs {
     pub deny_write: Vec<RawRule>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawProc {
     pub allow: Vec<RawRule>,
     pub deny: Vec<RawRule>,
     pub require_approval: Vec<RawRule>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RawNet {
     pub allow: Vec<RawRule>,
     pub deny: Vec<RawRule>,
     pub listen: Vec<RawRule>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawDoc {
     pub name: String,
     pub layer: Layer,

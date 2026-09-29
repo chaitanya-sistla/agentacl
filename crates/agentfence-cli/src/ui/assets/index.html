@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentFence</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">▣</span> AgentFence <span class="muted" id="who"></span></div>
+  <nav>
+    <button data-tab="sessions" class="tab active">Sessions</button>
+    <button data-tab="policy" class="tab">Policy</button>
+    <button data-tab="files" class="tab">Files</button>
+    <button data-tab="test" class="tab">Test</button>
+  </nav>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <section id="tab-sessions">
+    <h2>Active agent sessions</h2>
+    <p class="muted">Sandbox rules are fixed when an agent starts. After changing policy, relaunch the session; Claude Code resumes its conversation.</p>
+    <table class="grid"><thead><tr><th>Agent</th><th>PID</th><th>Project</th><th>Policy</th><th>Status</th><th></th></tr></thead><tbody id="sessions-body"></tbody></table>
+    <h2>Recent events</h2>
+    <table class="grid"><thead><tr><th>Time</th><th>Agent</th><th>Action</th><th>Resource</th><th>Decision</th><th>Rule</th></tr></thead><tbody id="events-body"></tbody></table>
+  </section>
+
+  <section id="tab-policy" hidden>
+    <div class="toolbar" id="scope-bar">
+      <label>Scope <select id="scope"><option value="user">User policy (all projects)</option><option value="project">Project policy (restrict-only)</option></select></label>
+      <label>Project <select id="project"></select></label>
+      <label>Agent <select id="agent"></select></label>
+      <button id="reload">Reload</button>
+    </div>
+    <div id="policy-meta" class="muted"></div>
+    <div id="policy-readonly" class="notice" hidden>This project policy is <b>trusted</b>, so it is read-only here. Edit it in a text editor and re-trust it with <code>agentfence policy trust</code>.</div>
+    <div class="subtabs">
+      <button data-sub="structured" class="subtab active">Rules</button>
+      <button data-sub="yaml" class="subtab">YAML</button>
+    </div>
+    <div id="sub-structured"></div>
+    <div id="sub-yaml" hidden><textarea id="yaml" spellcheck="false"></textarea></div>
+    <div class="actions">
+      <button id="preview" class="primary">Review changes…</button>
+      <span id="dirty" class="muted"></span>
+    </div>
+    <div id="preview-pane" hidden>
+      <h3>Review</h3>
+      <div id="preview-errors" class="error"></div>
+      <div id="preview-warnings"></div>
+      <h4>What agents gain / lose</h4>
+      <div id="effective-diff"></div>
+      <h4>File changes</h4>
+      <pre id="file-diff" class="diff"></pre>
+      <label id="confirm-unreadable-wrap" hidden><input type="checkbox" id="confirm-unreadable"> I understand agents will no longer be able to read the project</label>
+      <div class="actions"><button id="save" class="primary">Save policy</button><button id="cancel-preview">Keep editing</button></div>
+    </div>
+    <h3>Effective rules</h3>
+    <div id="warnings"></div>
+    <table class="grid"><thead><tr><th>Policy</th><th>Rule</th><th>Section</th><th>Effect</th><th>Pattern</th><th>Enforcement</th></tr></thead><tbody id="rules-body"></tbody></table>
+  </section>
+
+  <section id="tab-files" hidden>
+    <div class="toolbar">
+      <button id="up">↑ Up</button>
+      <input id="fs-path" size="60">
+      <button id="fs-go">Go</button>
+      <span class="muted">Actions add rules to your draft in the Policy tab; nothing is saved until you review and save.</span>
+    </div>
+    <div id="fs-note" class="notice" hidden></div>
+    <table class="grid"><thead><tr><th>Name</th><th>Read</th><th>Write</th><th>Add rule</th></tr></thead><tbody id="fs-body"></tbody></table>
+  </section>
+
+  <section id="tab-test" hidden>
+    <h2>Would an agent be allowed?</h2>
+    <p class="muted">Evaluated against the current draft for the selected agent and project.</p>
+    <div class="toolbar">
+      <select id="t-kind"><option value="path">File</option><option value="exec">Command</option><option value="host">Host</option></select>
+      <input id="t-value" size="60" placeholder="/path/to/file, git push origin main, api.example.com:443">
+      <select id="t-action"><option>read</option><option>write</option><option>rename</option></select>
+      <button id="t-go" class="primary">Evaluate</button>
+    </div>
+    <div id="t-result"></div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

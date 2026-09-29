@@ -1,6 +1,7 @@
 //! `agentfence`: identity, authorization and audit for AI agents on macOS.
 
 mod render;
+mod ui;
 
 use agentfence_core::audit::{EventQuery, Store};
 use agentfence_core::config::Paths;
@@ -40,6 +41,18 @@ enum Command {
     Run(RunArgs),
     /// Relaunch a running session under the current policy (keeps the conversation where the agent supports it)
     Restart(RestartArgs),
+    /// Local policy UI in your browser (127.0.0.1 only)
+    Ui(UiArgs),
+}
+
+#[derive(Args)]
+struct UiArgs {
+    /// Port on 127.0.0.1 (default: random)
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+    /// Print the link instead of opening the browser
+    #[arg(long)]
+    no_open: bool,
 }
 
 #[derive(Args)]
@@ -170,6 +183,7 @@ fn main() -> ExitCode {
             Command::Events(a) => events(&paths, a),
             Command::Run(a) => run(&paths, a),
             Command::Restart(a) => restart(&paths, a),
+            Command::Ui(a) => ui::run(paths, ui::UiOptions { port: a.port, open: !a.no_open }),
         }
     })();
     match result {
