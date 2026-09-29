@@ -40,10 +40,6 @@ impl Paths {
             config_dir,
         }
     }
-
-    pub fn session_tmp_root(&self) -> PathBuf {
-        self.state_dir.join("tmp")
-    }
 }
 
 /// Home directory from the password database, never from `$HOME`, which a
