@@ -400,29 +400,10 @@ fn policy_check(paths: &Paths, a: PolicyCheckArgs) -> Result<i32> {
 
     let views = rule_views(&SeatbeltBackend, &set, &a.agent, &proj);
     let defaults = set.effective_defaults(&a.agent, &proj);
-    let mut warnings = vec![];
-    if defaults.process == Effect::Ask {
-        warnings.push("defaults.process: ask cannot be enforced by the seatbelt backend; process rules without an explicit match are observed only".to_string());
-    }
+    // Same warnings as the console (agentfence_core::draft::warnings).
+    let mut warnings = agentfence_core::draft::warnings(&set, &a.agent, &proj);
     if defaults.process == Effect::Deny {
         warnings.push("defaults.process: deny is not supported by the seatbelt backend; `agentfence run` will refuse to start".to_string());
-    }
-    // Explicit denies that fully shadow an allow (policy-model §4.1).
-    let rules = set.rules_for(&a.agent, &proj);
-    for al in rules.iter().filter(|r| r.effect == Effect::Allow) {
-        if let agentfence_policy::set::Matcher::Path(ap) = &al.matcher {
-            let probe = match ap.kind() {
-                agentfence_policy::pathpat::PatKind::Subpath(s) | agentfence_policy::pathpat::PatKind::Literal(s) => s.clone(),
-                _ => continue,
-            };
-            if let Some(dn) = rules.iter().find(|r| r.effect == Effect::Deny && r.section == al.section && r.matches_path(&probe) && r.layer != agentfence_policy::Layer::Builtin) {
-                warnings.push(format!("explicit deny {} ({}) shadows allow {} ({}): the allow has no effect there", dn.written, dn.id, al.written, al.id));
-            }
-        }
-    }
-    let disabled = set.disabled_groups(&a.agent, &proj);
-    if !disabled.is_empty() {
-        warnings.push(format!("built-in secret protection disabled for: {}", disabled.join(", ")));
     }
     if a.json {
         println!(

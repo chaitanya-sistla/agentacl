@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Code2, FlaskConical, ListChecks, Network, ShieldCheck, AlertTriangle } from 'lucide-react'
-import type { Scope } from '@/lib/api'
+import { post, type PreviewResp, type Scope } from '@/lib/api'
 import { useApp } from '@/lib/app-context'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
@@ -21,6 +21,30 @@ export function PolicyEditor({ scope, project, agent = 'claude-code', tab, onTab
   const draft = usePolicyDraft(scope, project, agent)
   const { home } = useApp()
   const [tabErr, setTabErr] = React.useState<string | null>(null)
+  const [warnings, setWarnings] = React.useState<string[]>([])
+
+  // Live warnings (e.g. an allow a built-in protection overrides) for the
+  // saved rules, or for the draft once it changes.
+  React.useEffect(() => {
+    if (!draft.loaded) return
+    if (!draft.dirty) {
+      setWarnings(draft.loaded.effective?.warnings ?? [])
+      return
+    }
+    let live = true
+    const t = setTimeout(async () => {
+      try {
+        const body = draft.draftBody()
+        const r = await post<PreviewResp>('/api/policy/preview', body)
+        if (live) setWarnings(r.ok ? r.effective?.warnings ?? [] : [])
+      } catch {}
+    }, 400)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.version, draft.loaded, draft.dirty])
 
   React.useEffect(() => onDirty?.(draft.dirty), [draft.dirty, onDirty])
   React.useEffect(() => () => onDirty?.(false), [onDirty])
@@ -69,6 +93,19 @@ export function PolicyEditor({ scope, project, agent = 'claude-code', tab, onTab
         <Alert variant="info" className="mb-4">
           <ShieldCheck />
           <div>This project’s rules are trusted (you ran <code className="font-mono">agentfence policy trust</code>), so they may also allow things. To protect that trust, the console won’t overwrite this file: edit it in a text editor and run <code className="font-mono">agentfence policy trust</code> again.</div>
+        </Alert>
+      )}
+      {warnings.length > 0 && (
+        <Alert variant="warning" className="mb-4">
+          <AlertTriangle />
+          <div>
+            <div className="font-medium">{warnings.length === 1 ? '1 thing to check' : `${warnings.length} things to check`}{draft.dirty ? ' in your unsaved changes' : ''}</div>
+            <ul className="mt-1 flex list-disc flex-col gap-1 pl-4">
+              {warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </div>
         </Alert>
       )}
       <Tabs value={tab} onValueChange={(v) => switchTab(v as EditorTab)}>

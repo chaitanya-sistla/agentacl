@@ -289,3 +289,17 @@ fn preview_reports_changes_per_agent_and_excepts() {
     assert!(v["unreadable_projects"].is_array());
     assert!(v["current_sha256"].is_null());
 }
+
+#[test]
+fn allow_under_builtin_protection_is_flagged() {
+    let t = setup();
+    let tok = t.login();
+    let p = t.project.to_string_lossy().into_owned();
+    let y = "version: v1\nfilesystem:\n  allow_read: [\"${PROJECT}/**\", \"${HOME}/Library/Cookies/**\"]\n  allow_write: [\"${PROJECT}/**\"]\n";
+    let (s, v) = t.post(&tok, "/api/policy/preview", serde_json::json!({ "scope": "user", "project": p, "yaml": y }));
+    assert_eq!(s, 200, "{v}");
+    let w: Vec<String> = v["effective"]["warnings"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    assert!(w.iter().any(|x| x.contains("Library/Cookies") && x.contains("no effect") && x.contains("\"browsers\"")), "{w:?}");
+    // the project allow is not flagged (no built-in covers the whole project)
+    assert!(!w.iter().any(|x| x.contains("${PROJECT}/**") && x.contains("no effect")), "{w:?}");
+}

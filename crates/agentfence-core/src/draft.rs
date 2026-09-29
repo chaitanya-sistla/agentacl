@@ -134,7 +134,18 @@ pub fn warnings(set: &PolicySet, agent: &str, proj: &str) -> Vec<String> {
                 _ => continue,
             };
             if let Some(dn) = rules.iter().find(|r| r.effect == Effect::Deny && r.section == al.section && r.matches_path(&probe) && r.layer != Layer::Builtin) {
-                w.push(format!("explicit deny {} ({}) shadows allow {} ({})", dn.written, dn.id, al.written, al.id));
+                w.push(format!("explicit deny {} ({}) shadows allow {} ({}): the allow has no effect there", dn.written, dn.id, al.written, al.id));
+            } else if al.layer != Layer::Builtin {
+                // A user/project allow whose whole target a built-in protection
+                // denies has no effect (explicit deny wins).
+                if let Some(dn) = rules.iter().find(|r| r.effect == Effect::Deny && r.section == al.section && r.layer == Layer::Builtin && r.matches_path(&probe)) {
+                    let fix = if dn.policy == "protect-secrets" {
+                        format!("to allow it, switch off the built-in \"{}\" group (builtin.disable)", dn.id)
+                    } else {
+                        "this protection can't be switched off".to_string()
+                    };
+                    w.push(format!("{} allow {} has no effect: built-in protection {} ({}) blocks it and a block always wins; {fix}", al.section.as_str(), al.written, dn.policy, dn.id));
+                }
             }
         }
         if let Matcher::Net(n) = &al.matcher {

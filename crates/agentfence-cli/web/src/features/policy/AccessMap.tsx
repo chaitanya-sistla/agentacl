@@ -2,7 +2,7 @@ import * as React from 'react'
 import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Link2, Loader2, Lock, ShieldCheck, ShieldX, Eye, Pencil, FolderKanban, House, KeyRound, Cpu } from 'lucide-react'
 import { post, type FsList, type FsNode, type MapGroup, type Scope } from '@/lib/api'
 import { useApp } from '@/lib/app-context'
-import { explainRule, policyLabel, tildify } from '@/lib/format'
+import { explainRule, groupLabel, policyLabel, tildify } from '@/lib/format'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -300,6 +300,24 @@ function NodePanel({ node, scope, draft, home, onAdd, onRemove, onEditRules }: {
     return !!r && !!draft.doc && rulesOf(draft.doc, a.section).some((x) => x.pattern === r)
   }
   const source = (d: FsNode['read']) => (d.policy ? policyLabel[d.policy] ?? d.policy : '')
+  // A built-in block always wins over an allow rule, so an allow would do
+  // nothing here: offer switching the secret group off instead (user rules
+  // only), or explain that the protection is permanent.
+  const lock = [node.read, node.write].find((d) => d.effect !== 'allow' && ['protect-secrets', 'exec-persistence', 'agentfence-self'].includes(d.policy))
+  const group = lock?.policy === 'protect-secrets' ? lock.rule_id : null
+  const groupOff = !!group && !!draft.doc?.builtin?.disable?.includes(group)
+  const toggleGroup = async () => {
+    if (!group) return
+    if (draft.mode === 'yaml') {
+      const e = await draft.toDoc()
+      if (e) return
+    }
+    draft.updateDoc((d) => {
+      const cur = d.builtin?.disable ?? []
+      const next = groupOff ? cur.filter((x) => x !== group) : [...new Set([...cur, group])]
+      return { ...d, builtin: next.length ? { disable: next } : null }
+    })
+  }
   return (
     <Card>
       <CardHeader className="border-b pb-4">
@@ -341,15 +359,27 @@ function NodePanel({ node, scope, draft, home, onAdd, onRemove, onEditRules }: {
             {node.inner_allow} allow and {node.inner_deny} block rule(s) target things inside this folder. Expand it to see them.
           </div>
         )}
-        {node.builtin_lock && (
-          <div className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
-            <Lock className="mt-0.5 size-3.5 shrink-0" /> A built-in protection covers this. Your allow rules can’t override it; secret groups can be switched off under Policies → Built-in protections.
-          </div>
-        )}
         <div>
           <div className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">Change access {scope === 'project' ? '(this project)' : '(all projects)'}</div>
           <div className="flex flex-col gap-1.5">
-            {actions.map((a) => {
+            {lock && (
+              <div className="mb-1 rounded-md border border-amber-500/30 bg-amber-500/[0.06] p-3 text-xs text-amber-900 dark:text-amber-200">
+                {group ? (
+                  <>
+                    <div className="font-medium">Protected by “{groupLabel[group] ?? group}”</div>
+                    <div className="mt-0.5">An allow rule can’t override a built-in protection — a block always wins. To let agents in, switch this protection off for every agent{scope === 'project' ? ' (in “All projects (your rules)”)' : ''}.</div>
+                    {scope === 'user' && (
+                      <Button size="sm" variant={groupOff ? 'secondary' : 'destructive'} className="mt-2 h-auto w-full py-1.5 whitespace-normal" onClick={toggleGroup}>
+                        {groupOff ? `Undo: keep protecting ${groupLabel[group] ?? group}` : `Stop protecting ${groupLabel[group] ?? group}`}
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <div>This is always protected ({policyLabel[lock.policy] ?? lock.policy}) and can’t be opened up.</div>
+                )}
+              </div>
+            )}
+            {actions.filter((a) => !(lock && a.key.startsWith('allow'))).map((a) => {
               const act = node.actions[a.key]
               const on = inDraft(a)
               const disabled = !act || !!act.unavailable
