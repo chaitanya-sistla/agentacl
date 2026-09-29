@@ -193,3 +193,54 @@ fn network_default_deny_through_proxy() {
     assert_eq!(hit["source"], "proxy");
 }
 
+
+#[test]
+fn restart_relaunches_under_new_policy() {
+    let e = Env::new();
+    std::fs::write(e.project.join("bumper.yaml"), "x: 1\n").unwrap();
+    std::fs::create_dir_all(e.project.join(".agentfence")).unwrap();
+    let deny = "version: v1\nfilesystem:\n  deny_read: [\"${PROJECT}/bumper.yaml\"]\n";
+    std::fs::write(e.project.join(".agentfence/policy.yaml"), deny).unwrap();
+    // First launch: bumper.yaml is denied; wait to be restarted. Second launch: read it and exit.
+    let script = "if [ -f marker ]; then cat bumper.yaml && echo second-read-ok; exit 0; fi; touch marker; cat bumper.yaml 2>/dev/null || echo first-read-blocked; sleep 30";
+    let mut c = e.cmd();
+    c.args(["run", "--", "/bin/sh", "-c", script]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let child = c.spawn().unwrap();
+    // wait for the session to be active
+    let mut active = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let o = e.cmd().args(["agents", "--json"]).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        if v["sessions"].as_array().is_some_and(|a| !a.is_empty()) && e.project.join("marker").exists() {
+            active = true;
+            break;
+        }
+    }
+    assert!(active, "session never became active");
+    std::fs::write(e.project.join(".agentfence/policy.yaml"), "version: v1\n").unwrap();
+    let r = e.cmd().arg("restart").output().unwrap();
+    assert!(r.status.success(), "{}", text(&r));
+    let out = child.wait_with_output().unwrap();
+    let t = text(&out);
+    assert!(t.contains("first-read-blocked"), "{t}");
+    assert!(t.contains("Relaunching"), "{t}");
+    assert!(t.contains("second-read-ok"), "{t}");
+    assert!(out.status.success(), "{t}");
+}
+
+#[test]
+fn policy_change_hint() {
+    let e = Env::new();
+    std::fs::create_dir_all(e.project.join(".agentfence")).unwrap();
+    let p = e.project.join(".agentfence/policy.yaml");
+    std::fs::write(&p, "version: v1\n").unwrap();
+    // The agent cannot write .agentfence (protected), so change it from outside while it sleeps.
+    let mut c = e.cmd();
+    c.args(["run", "--", "/bin/sh", "-c", "sleep 1.5"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let child = c.spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    std::fs::write(&p, "version: v1\nfilesystem:\n  deny_read: [\"${PROJECT}/x\"]\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(text(&out).contains("Policy changed during this session"), "{}", text(&out));
+}

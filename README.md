@@ -93,6 +93,7 @@ cargo install --path crates/agentfence-cli
 agentfence discover                      # installed and running agents
 agentfence run -- claude                 # launch Claude Code under supervision
 agentfence run --dry-run -- claude       # show identity, rules and the sandbox profile
+agentfence restart                       # apply a policy change: relaunch the agent, conversation kept (claude --continue)
 agentfence agents [--all]                # supervised sessions (and unsupervised agents)
 agentfence status                        # backend, capabilities, active sessions
 agentfence policy check                  # effective rules and how each is enforced
@@ -134,7 +135,8 @@ A repository can ship `.agentfence/policy.yaml`, but that file can only
   designed (`docs/macos-enforcement.md` §3) but not built. It needs Apple's
   `com.apple.developer.endpoint-security.client` entitlement.
 - **The sandbox profile is fixed at launch.** A policy change applies to the
-  next session.
+  next launch. `agentfence restart` relaunches the running agent in place, and
+  Claude Code resumes its conversation.
 - **No interactive approval yet.** Filesystem `ask` rules fail closed, and
   argument-level process rules are observed only.
 - **Agents that sandbox themselves can't nest inside AgentFence.** AgentFence

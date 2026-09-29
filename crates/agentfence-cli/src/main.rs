@@ -38,6 +38,14 @@ enum Command {
     Events(EventsArgs),
     /// Launch an agent under AgentFence supervision
     Run(RunArgs),
+    /// Relaunch a running session under the current policy (keeps the conversation where the agent supports it)
+    Restart(RestartArgs),
+}
+
+#[derive(Args)]
+struct RestartArgs {
+    /// Session id (default: the only active session)
+    session: Option<String>,
 }
 
 #[derive(Args)]
@@ -142,6 +150,7 @@ fn main() -> ExitCode {
             Command::Policy(PolicyCmd::Check(a)) => policy_check(&paths, a),
             Command::Events(a) => events(&paths, a),
             Command::Run(a) => run(&paths, a),
+            Command::Restart(a) => restart(&paths, a),
         }
     })();
     match result {
@@ -415,6 +424,28 @@ fn policy_check(paths: &Paths, a: PolicyCheckArgs) -> Result<i32> {
     Ok(0)
 }
 
+fn restart(paths: &Paths, a: RestartArgs) -> Result<i32> {
+    let store = Store::open(&paths.db_path)?;
+    let sessions = live_sessions(&store)?;
+    let s = match &a.session {
+        Some(id) => sessions.iter().find(|s| &s.session_id == id).with_context(|| format!("no active session {id}"))?,
+        None => match sessions.as_slice() {
+            [one] => one,
+            [] => bail!("no active sessions"),
+            _ => bail!("several sessions are active; pass one of: {}", sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>().join(", ")),
+        },
+    };
+    // Only signal a pid that is still an agentfence supervisor (guards pid reuse).
+    let f = proc::facts(s.supervisor_pid).context("supervisor is not running")?;
+    let exe = f.exe.unwrap_or_default();
+    if !exe.ends_with("/agentfence") {
+        bail!("pid {} is no longer an agentfence supervisor ({exe})", s.supervisor_pid);
+    }
+    agentfence_core::supervisor::request_restart(s.supervisor_pid)?;
+    println!("Restart requested for {} ({}); it relaunches under the current policy.", s.session_id, agent_display(&s.agent));
+    Ok(0)
+}
+
 fn parse_effect(s: &str) -> Result<Effect> {
     Ok(match s {
         "allow" => Effect::Allow,
@@ -517,7 +548,10 @@ fn run(paths: &Paths, a: RunArgs) -> Result<i32> {
         p.cleanup();
         return Ok(0);
     }
-    let summary = supervisor::run(paths, opts)?;
+    supervisor::run(paths, opts, |summary| print_summary(summary, &home))
+}
+
+fn print_summary(summary: &supervisor::Summary, home: &str) {
     let mut err = String::new();
     err.push_str(&format!("\nAgentFence session {} ended (exit {})\n", summary.session_id, summary.exit_code));
     err.push_str(&format!(
@@ -527,13 +561,13 @@ fn run(paths: &Paths, a: RunArgs) -> Result<i32> {
         summary.observed.len()
     ));
     for (action, resource, rule, n) in summary.denied.iter().take(8) {
-        err.push_str(&format!("  BLOCKED   {:<16} {} ({rule}){}\n", action, term_safe(&tilde(resource, &home)), if *n > 1 { format!(" ×{n}") } else { String::new() }));
+        err.push_str(&format!("  BLOCKED   {:<16} {} ({rule}){}\n", action, term_safe(&tilde(resource, home)), if *n > 1 { format!(" ×{n}") } else { String::new() }));
     }
     for (action, resource, rule) in summary.observed.iter().take(10) {
         err.push_str(&format!("  OBSERVED  {:<16} {} ({rule}) — NOT BLOCKED\n", action, term_safe(resource)));
     }
     for f in &summary.integrity_changes {
-        err.push_str(&format!("  REVIEW BEFORE RUNNING: {} changed during the session\n", term_safe(&tilde(&f.to_string_lossy(), &home))));
+        err.push_str(&format!("  REVIEW BEFORE RUNNING: {} changed during the session\n", term_safe(&tilde(&f.to_string_lossy(), home))));
     }
     if !summary.stripped_env.is_empty() {
         err.push_str(&format!("  Withheld environment variables: {}\n", summary.stripped_env.join(", ")));
@@ -542,6 +576,14 @@ fn run(paths: &Paths, a: RunArgs) -> Result<i32> {
         err.push_str(&format!("  warning: {}\n", term_safe(w)));
     }
     err.push_str(&format!("  Details: agentfence events --session {}\n", summary.session_id));
+    if summary.restarted {
+        err.push_str(&format!("\nRelaunching {} under the updated policy{}…\n", summary.agent_argv0, if summary.resume_args.is_empty() { String::new() } else { format!(" ({})", summary.resume_args.join(" ")) }));
+    } else if summary.policy_changed {
+        let resume = if summary.resume_args.is_empty() { String::new() } else { format!(" {}", summary.resume_args.join(" ")) };
+        err.push_str(&format!(
+            "  Policy changed during this session; it applies from the next launch.\n  Tip: `agentfence restart` relaunches a running session in place, or run: agentfence run -- {}{resume}\n",
+            summary.agent_argv0
+        ));
+    }
     eprint!("{err}");
-    Ok(summary.exit_code)
 }

@@ -56,6 +56,8 @@ pub struct RuntimeReqs {
     /// Arguments inserted after argv[0], e.g. to switch off the agent's own
     /// inner sandbox, which cannot nest inside ours.
     pub launch_args: Vec<String>,
+    /// Arguments appended on `agentfence restart` to resume the conversation.
+    pub resume_args: Vec<String>,
 }
 
 pub trait AgentProvider: Send + Sync {

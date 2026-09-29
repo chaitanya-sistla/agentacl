@@ -60,6 +60,12 @@ pub struct Summary {
     /// Denials by explicit policy rules vs. by the sandbox baseline / default deny.
     pub denied_by_policy: u32,
     pub denied_by_baseline: u32,
+    /// The session ended because `agentfence restart` asked for a relaunch.
+    pub restarted: bool,
+    /// A policy file changed while the session ran (its sandbox is stale).
+    pub policy_changed: bool,
+    pub agent_argv0: String,
+    pub resume_args: Vec<String>,
     pub observed: Vec<(String, String, String)>,
     pub integrity_changes: Vec<PathBuf>,
     pub stripped_env: Vec<String>,
@@ -524,15 +530,59 @@ fn kill_all(pids: &[i32], me: i32) {
 }
 
 static TERM_REQUESTED: AtomicBool = AtomicBool::new(false);
+static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 extern "C" fn on_term(_: libc::c_int) {
     TERM_REQUESTED.store(true, Ordering::SeqCst);
 }
+extern "C" fn on_restart(_: libc::c_int) {
+    RESTART_REQUESTED.store(true, Ordering::SeqCst);
+}
 
-pub fn run(paths: &Paths, opts: RunOptions) -> Result<Summary> {
-    let prepared = prepare(paths, &opts)?;
-    let result = run_prepared(paths, &opts, &prepared);
-    prepared.cleanup();
-    result
+/// Asks the supervisor with `pid` to relaunch its agent (see [`run`]).
+pub fn request_restart(pid: i32) -> Result<()> {
+    // SAFETY: kill has no memory effects.
+    if unsafe { libc::kill(pid, libc::SIGUSR1) } != 0 {
+        bail!("could not signal supervisor {pid}: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The policy files a session was built from; a change means the running
+/// session's (fixed) sandbox no longer matches the policy on disk.
+fn policy_inputs(paths: &Paths, opts: &RunOptions, project: &Path) -> Vec<PathBuf> {
+    vec![
+        opts.policy_file.clone().unwrap_or_else(|| paths.user_policy.clone()),
+        paths.trust_file.clone(),
+        project.join(".agentfence/policy.yaml"),
+    ]
+}
+
+/// Runs the agent. `agentfence restart` (SIGUSR1 to this supervisor) stops the
+/// agent and relaunches it under freshly loaded policy, adding the provider's
+/// resume arguments (e.g. `claude --continue`) so the conversation carries on.
+/// Each launch is its own session; `on_session_end` is called after each.
+pub fn run(paths: &Paths, mut opts: RunOptions, mut on_session_end: impl FnMut(&Summary)) -> Result<i32> {
+    // SAFETY: installing a handler that only stores to an atomic.
+    unsafe {
+        let h = on_restart as extern "C" fn(libc::c_int) as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGUSR1, h);
+    }
+    loop {
+        RESTART_REQUESTED.store(false, Ordering::SeqCst);
+        let prepared = prepare(paths, &opts)?;
+        let result = run_prepared(paths, &opts, &prepared);
+        prepared.cleanup();
+        let summary = result?;
+        on_session_end(&summary);
+        if !summary.restarted {
+            return Ok(summary.exit_code);
+        }
+        for a in &prepared.reqs.resume_args {
+            if !opts.argv.iter().skip(1).any(|x| x == a) {
+                opts.argv.push(a.clone());
+            }
+        }
+    }
 }
 
 fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summary> {
@@ -547,6 +597,8 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
     };
     let store = Store::open(&paths.db_path)?;
     let before: BTreeMap<PathBuf, Option<String>> = integrity::snapshot_hashes(&p.watch);
+    let policy_files = policy_inputs(paths, opts, &s.project);
+    let policy_before = integrity::snapshot_hashes(&policy_files);
 
     // Sentinel for knowing the log stream is live / drained (must exist to be reported).
     let sentinel = p.session_dir.join("sentinel");
@@ -659,13 +711,20 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
         libc::signal(libc::SIGTERM, h);
         libc::signal(libc::SIGHUP, h);
     }
+    let mut restarted = false;
+    let mut stop_deadline: Option<Instant> = None;
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break st;
         }
-        if TERM_REQUESTED.swap(false, Ordering::SeqCst) {
+        if TERM_REQUESTED.swap(false, Ordering::SeqCst) || (RESTART_REQUESTED.swap(false, Ordering::SeqCst) && { restarted = true; true }) {
             // SAFETY: signal the agent's process group (it is a session leader).
             unsafe { libc::kill(-agent_pid, libc::SIGTERM) };
+            stop_deadline.get_or_insert(Instant::now() + Duration::from_secs(5));
+        }
+        if stop_deadline.is_some_and(|d| Instant::now() > d) {
+            // SAFETY: as above; the agent ignored SIGTERM.
+            unsafe { libc::kill(-agent_pid, libc::SIGKILL) };
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -700,6 +759,7 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
     observer.stop();
     proxy.stop();
 
+    let policy_changed = !integrity::changed(&policy_before, &integrity::snapshot_hashes(&policy_files)).is_empty();
     let after = integrity::snapshot_hashes(&p.watch);
     let integrity_changes = integrity::changed(&before, &after);
     let st = live.store.lock().unwrap();
@@ -744,6 +804,10 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared) -> Result<Summar
         denied,
         denied_by_policy: by_policy,
         denied_by_baseline: by_baseline,
+        restarted,
+        policy_changed,
+        agent_argv0: opts.argv.first().cloned().unwrap_or_default(),
+        resume_args: p.reqs.resume_args.clone(),
         observed,
         integrity_changes,
         stripped_env: env.stripped,

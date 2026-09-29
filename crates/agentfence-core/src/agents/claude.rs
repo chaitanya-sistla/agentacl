@@ -93,6 +93,7 @@ impl AgentProvider for Claude {
                 "${HOME}/.claude/skills/**".into(),
             ],
             launch_args: vec![],
+            resume_args: vec!["--continue".into()],
         }
     }
 }
