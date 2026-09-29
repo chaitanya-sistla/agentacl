@@ -14,3 +14,4 @@ pub mod pathpat;
 pub mod netpat;
 pub mod procpat;
 pub mod set;
+pub mod eval;

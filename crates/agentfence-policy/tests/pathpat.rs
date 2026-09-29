@@ -94,10 +94,11 @@ fn rejects_bad_patterns() {
 
 #[test]
 fn protected_ancestors() {
-    assert_eq!(pat("${HOME}/.aws/sso/cache/**").protected_ancestors(), vec!["/u/.aws", "/u/.aws/sso"]);
-    assert_eq!(pat("${HOME}/.aws/credentials").protected_ancestors(), vec!["/u/.aws"]);
-    assert!(pat("${HOME}/.ssh/**").protected_ancestors().is_empty());
+    assert_eq!(pat("${HOME}/.aws/sso/cache/**").protected_ancestors(), vec!["/u", "/u/.aws", "/u/.aws/sso"]);
+    assert_eq!(pat("${HOME}/.aws/credentials").protected_ancestors(), vec!["/u", "/u/.aws"]);
+    assert_eq!(pat("${HOME}/.ssh/**").protected_ancestors(), vec!["/u"]);
     assert!(pat("/**/.env").protected_ancestors().is_empty());
-    assert_eq!(pat("${HOME}/.kube/**/config").protected_ancestors(), vec!["/u/.kube"]);
-    assert!(pat("${PROJECT}/**/.env.*").protected_ancestors().is_empty());
+    assert_eq!(pat("${HOME}/.kube/**/config").protected_ancestors(), vec!["/u", "/u/.kube"]);
+    assert_eq!(pat("${PROJECT}/**/.env.*").protected_ancestors(), vec!["/p"]);
+    assert_eq!(pat("/opt/secrets/key").protected_ancestors(), vec!["/opt", "/opt/secrets"]);
 }

@@ -146,27 +146,28 @@ impl PathPattern {
         format!("^{}$", translate(&self.source, true).expect("validated in parse"))
     }
 
-    /// Directories strictly below the leading variable's value and strictly
-    /// above the protected location, plus a glob's anchor directory. Renaming
-    /// any of them would move protected files out from under this pattern.
+    /// Every directory above the protected location (and a glob's anchor
+    /// itself), excluding `/`. Renaming any of them moves protected files out
+    /// from under this pattern — e.g. `mv ~/.claude $TMPDIR/c`, edit, move back
+    /// — so unlink/rename/link of each is denied (policy-model §4).
     pub fn protected_ancestors(&self) -> Vec<String> {
-        let Some(root) = self.var_root.as_deref() else { return vec![] };
-        let (top, include_top) = match &self.kind {
-            PatKind::Literal(p) => (p.clone(), false),
-            PatKind::Subpath(p) => (p.clone(), false),
-            PatKind::Glob => (self.anchor.clone(), true),
+        let top = match &self.kind {
+            PatKind::Literal(p) | PatKind::Subpath(p) => parent(p),
+            PatKind::Glob => self.anchor.clone(),
         };
-        let root = root.trim_end_matches('/');
-        let Some(rel) = top.strip_prefix(root).and_then(|r| r.strip_prefix('/')) else { return vec![] };
-        let segs: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-        let upto = if include_top { segs.len() } else { segs.len().saturating_sub(1) };
-        (1..=upto).map(|i| format!("{root}/{}", segs[..i].join("/"))).collect()
+        ancestors_inclusive(&top)
     }
 
     #[doc(hidden)]
     pub fn regex_body(&self) -> &str {
         &self.body
     }
+}
+
+/// `p` and each of its ancestors, excluding `/`, shallowest first.
+pub fn ancestors_inclusive(p: &str) -> Vec<String> {
+    let segs: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+    (1..=segs.len()).map(|i| format!("/{}", segs[..i].join("/"))).collect()
 }
 
 fn parent(p: &str) -> String {
