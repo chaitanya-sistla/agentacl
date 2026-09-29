@@ -101,6 +101,9 @@ Every `/api/*` route requires `Authorization: Bearer <token>`, except
 | `POST /api/policy/save` `{scope, project, agent, yaml \| doc, base_sha256 \| null, confirm: [...]}` | §4.3 |
 | `POST /api/fs/list` `{path, scope, project, agent, draft}` | entries (name, kind, symlink target) with decisions; §4.5 |
 | `POST /api/evaluate` `{scope, project, agent, draft, request}` | decision plus trace |
+| `POST /api/map` `{scope, project, agent, draft}` | Access-map roots: the project, home, protected secrets that exist on this Mac, and system areas. Each node carries a status (full, read-only, partial, blocked, ask), counts of rules inside it, and rule actions. Children come from `fs/list` with `offset`/`limit` paging |
+| `POST /api/pick-folder` | Opens the native macOS folder chooser (`osascript choose folder`), since the server runs locally as the user. The chosen path goes through `resolve_project`. The endpoint is authenticated like the others |
+| `GET /api/events?page&size&kind&q` | Server-side pagination (`kind`: all, blocked, allowed, observed, system; `q` searches resource, action, rule and agent). Also returns 24 h counts |
 
 ### 4.2 Model ↔ YAML
 
