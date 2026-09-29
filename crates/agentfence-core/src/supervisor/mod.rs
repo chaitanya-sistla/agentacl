@@ -295,6 +295,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         policy: PolicyRef { name: policy_name.into(), sha256: policy.sha256.clone(), disabled_builtin_groups: disabled },
         backend: backend.name().into(),
         started_at: now_rfc3339(),
+        agentfence_version: Some(env!("CARGO_PKG_VERSION").into()),
     };
     let watch = integrity::watch_list(&project, &session.human.home);
     Ok(Prepared { session, policy, reqs, rules, agent_argv, extra_denies, exec_deny_literals, socket_denies, watch, session_dir })

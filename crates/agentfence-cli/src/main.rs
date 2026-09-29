@@ -435,6 +435,11 @@ fn restart(paths: &Paths, a: RestartArgs) -> Result<i32> {
             _ => bail!("several sessions are active; pass one of: {}", sessions.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>().join(", ")),
         },
     };
+    // Supervisors from before restart support would be killed by SIGUSR1.
+    let ident: serde_json::Value = serde_json::from_str(&s.identity_json).unwrap_or_default();
+    if ident.get("agentfence_version").and_then(|v| v.as_str()).is_none() {
+        bail!("session {} was started by an older agentfence without restart support; exit the agent and run it again", s.session_id);
+    }
     // Only signal a pid that is still an agentfence supervisor (guards pid reuse).
     let f = proc::facts(s.supervisor_pid).context("supervisor is not running")?;
     let exe = f.exe.unwrap_or_default();

@@ -17,6 +17,9 @@ pub struct Session {
     pub policy: PolicyRef,
     pub backend: String,
     pub started_at: String,
+    /// Version of the supervisor; `restart` requires one that handles SIGUSR1.
+    #[serde(default)]
+    pub agentfence_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
