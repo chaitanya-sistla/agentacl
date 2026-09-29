@@ -125,12 +125,16 @@ pub enum PolicyError { Yaml{source,msg}, Version{source,found}, UnknownKey{sourc
 **Interfaces (produces):**
 ```rust
 pub struct Vars { pub home: String, pub project: String, pub tmpdir: String, pub agent_state: Option<String> }
-pub fn expand(s: &str, vars: &Vars, source: &str) -> Result<String, PolicyError>   // ${HOME} ${PROJECT} ${TMPDIR} ${AGENT_STATE}; unknown → UnknownVariable; ${AGENT_STATE} when None → UnknownVariable
+pub struct Expanded { pub text: String, pub var_root: Option<String> }  // var_root = expanded value of a LEADING ${VAR}, e.g. "/u" for "${HOME}/.aws/credentials"
+pub fn expand(s: &str, vars: &Vars, source: &str) -> Result<Expanded, PolicyError>   // ${HOME} ${PROJECT} ${TMPDIR} ${AGENT_STATE}; unknown → UnknownVariable; ${AGENT_STATE} when None → UnknownVariable
 pub fn canonical_prefix_map(p: &str) -> String   // lexical: /tmp→/private/tmp, /var→/private/var, /etc→/private/etc; collapses //, /./ ; resolves .. lexically
 pub struct PathPattern { /* source, anchor, kind, regex */ }
 pub enum PatKind { Literal(String), Subpath(String), Glob }
 impl PathPattern {
-  pub fn parse(expanded: &str) -> Result<Self, String>        // must start with '/'; trailing "/**" with no other glob chars → Subpath
+  pub fn parse(expanded: &Expanded) -> Result<Self, String>   // must start with '/'; trailing "/**" with no other glob chars → Subpath
+  pub fn protected_ancestors(&self) -> Vec<String>            // dirs strictly below var_root and strictly above the protected path:
+                                                              // "${HOME}/.aws/sso/cache/**" → ["/u/.aws", "/u/.aws/sso"]; "${HOME}/.aws/credentials" → ["/u/.aws"];
+                                                              // "${HOME}/.ssh/**" → [] (/u/.ssh itself is matched by the pattern); no var_root ("/**/.env") → []
   pub fn parse_except(expanded_or_rel: &str, rule_anchor: &str) -> Result<Self, String> // "**/x" allowed → anchored at rule_anchor
   pub fn matches(&self, canonical_path: &str) -> bool         // case-insensitive (ASCII fold)
   pub fn anchor(&self) -> &str                                // longest literal dir prefix before first glob char
@@ -157,6 +161,7 @@ The Rust matcher is built with `regex::RegexBuilder::case_insensitive(true)` fro
 - [ ] Kinds: `/u/.ssh/**` → `Subpath("/u/.ssh")`; `/u/.aws/credentials` → `Literal`; `/p/**/.env` → `Glob` with anchor `/p`.
 - [ ] `sbpl_regex` of `/p/**/.env` == `^/[pP]/(.*/)?\.[eE][nN][vV]$`.
 - [ ] Relative pattern `foo/**` → error.
+- [ ] `protected_ancestors`: the three examples in the interface comment, exactly.
 - [ ] Commit.
 
 ### Task 4: Command and network patterns
@@ -252,7 +257,7 @@ impl PolicyEngine for PolicySet
 impl PolicySet { pub fn evaluate_address(&self, subj: &Subject, ip: IpAddr, port: u16) -> Decision }   // network phase 2
 ```
 Algorithm (policy-model §4, §4.2), in order:
-1. Take the applicable docs' rules for the section. FsRead uses `deny_read`/`allow_read`. FsWrite uses `deny_write`/`allow_write`, **plus** — for Unlink/Rename/Link — every `deny_read` rule, as an implied deny. That implied deny matches the path itself, and any path equal to an ancestor dir of the rule's anchor that lies below it.
+1. Take the applicable docs' rules for the section. FsRead uses `deny_read`/`allow_read`. FsWrite uses `deny_write`/`allow_write`, **plus** — for Unlink/Rename/Link — every `deny_read` rule, as an implied deny. That implied deny matches the path itself, and any path equal to one of `PathPattern::protected_ancestors()`.
 2. deny → ask → allow → default.
 3. A deny reports the first rule in load order (Builtin, User, Project).
 4. Network phase 1 (`Host`) uses host patterns; an IP-literal host goes through phase 2's logic.
