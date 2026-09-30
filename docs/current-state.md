@@ -1,4 +1,4 @@
-# AgentACL: current state (v0.2.0, 2026-09-30)
+# AgentACL: current state (v0.3.0, 2026-09-30)
 
 An audit of what exists today, written before the next round of work.
 Every "enforced" claim below cites the test that exercises it. Anything
@@ -167,7 +167,6 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
      it uses an HttpOnly per-port cookie plus a required custom header (fixed
      in this audit).
    - Several design docs still say "design, iteration 1".
-   - `guide.md` predates the v0.2.0 network features.
 5. **Binaries are ad-hoc signed.** macOS Gatekeeper may warn on first run of
    a downloaded binary.
 6. **Console supply chain.** The React console pulls about 95 npm packages

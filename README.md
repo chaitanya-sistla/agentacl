@@ -41,7 +41,7 @@ where the agent can't change it.
 ## Quick start
 
 ```sh
-V=0.2.0
+V=0.3.0
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing     # must print: OK

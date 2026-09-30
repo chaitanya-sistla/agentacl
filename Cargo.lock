@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentacl-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agentacl-core",
  "agentacl-policy",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "agentacl-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agentacl-policy",
  "anyhow",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "agentacl-policy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "proptest",

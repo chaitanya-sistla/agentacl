@@ -7,6 +7,38 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-30
+
+**Give each agent its own access, and decide without the noise.** v0.2.0
+turned what the sandbox blocks into decisions. v0.3.0 makes those decisions
+precise and calm: allow a folder or a site for one agent in one project,
+take as long as you need to answer, get one notification a minute instead
+of a stream, and see whether a restart actually worked. It also closes
+sandbox gaps found in a security audit, and publishes a matrix of exactly
+what AgentACL enforces, observes and doesn't do.
+
+### Highlights
+
+- **Per-agent, per-project access.** "Allow…" on a refused folder or site
+  asks *for which agent* and *where*. Claude Code can get `~/o2` in one
+  project without Codex, or any other project, getting it too.
+- **Take your time.** Agents on a new site wait 30 s, 1, 2 or 5 minutes for
+  you, with "+1 min" when you need longer.
+- **One notification a minute, at most**, summarizing what's waiting and
+  what was refused. Quiet mode for when you're focused.
+- **Restarts you can trust.** The console shows whether the agent came
+  back, or why it didn't.
+- **Security audit fixes.** Moving a folder that holds a key no longer
+  exposes it; more places to plant code that runs later are closed; agents
+  can no longer read AgentACL's own audit log.
+- **Honest guarantees.** [docs/security-guarantees.md](docs/security-guarantees.md)
+  lists every capability as ENFORCED, PARTIALLY ENFORCED, OBSERVED, PLANNED
+  or NOT SUPPORTED, with the test behind each claim.
+
+Files still can't wait for your answer: the macOS sandbox refuses them
+instantly. A refused folder becomes a request you allow with a scope, and
+the agent picks it up on restart (the conversation resumes).
+
 ### Added
 - `docs/current-state.md`: an audit of what exists, what is enforced (with
   the test behind each claim), what is observed and what is planned.
