@@ -11,13 +11,16 @@ step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
 step "Authorship (commits not yet on origin/main)"
 base=$(git merge-base HEAD origin/main 2>/dev/null || true)
-if [[ -n "$base" ]]; then scripts/check-authorship.sh "$base..HEAD"; else scripts/check-authorship.sh --all; fi
+if [[ -n "$base" ]]; then scripts/check-authorship.sh --maintainer "$base..HEAD"; else scripts/check-authorship.sh --maintainer --all; fi
 
 step "No leftover old product name"
 if git grep -nIi 'agentfence' -- . ':!.gitignore' ':!CHANGELOG.md' ':!scripts/check.sh' ':!.github/workflows/ci.yml'; then
   echo "found 'agentfence' above; the product is AgentACL" >&2
   exit 1
 fi
+
+step "Spelling (typos), if installed"
+if command -v typos >/dev/null; then typos; else echo "brew install typos-cli  # to run this check"; fi
 
 step "Formatting"
 cargo fmt --all --check

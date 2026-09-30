@@ -147,7 +147,7 @@ pub enum PolicyError { Yaml{source,msg}, Version{source,found}, UnknownKey{sourc
 **Tests (`tests/parse.rs`):**
 - [ ] The full policy-model §2 example parses: 3 filesystem sections, 1 process deny, 4 require_approval, 3 network allow, and the object rule `env-variants` with its 4 excepts.
 - [ ] `version: v2` → `PolicyError::Version`.
-- [ ] Unknown top-level key `filesytem:` → error, and the message contains `filesytem`.
+- [ ] Unknown top-level key `filesytem:` → error, and the message contains `filesytem`. <!-- spellchecker:disable-line -->
 - [ ] Project layer with `filesystem.allow_read: ["/x"]` → `ProjectForbidden{key:"filesystem.allow_read"}`. Same for `builtin`, `network.listen` and `process.allow`.
 - [ ] Project layer with only deny sections plus `defaults.network: deny` → Ok.
 - [ ] A rule object with both `path` and `host` → `BadRule`.

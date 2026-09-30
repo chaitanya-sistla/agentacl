@@ -315,7 +315,7 @@ fn deny(reason: &str, policy: &str, rule: &str) -> agentacl_policy::Decision {
 fn network_sites_rules_and_requests() {
     let t = setup();
     let tok = t.login();
-    // Real proxy events (they can only be created by the proxy): two refused CONNECTs.
+    // Real proxy events (they can only be created by the proxy): two refused CONNECT requests.
     struct DenyAll;
     impl agentacl_core::netproxy::NetDecider for DenyAll {
         fn host(&self, _: &str, _: u16) -> agentacl_policy::Decision {

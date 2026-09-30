@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a new capability or an improvement.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution. Who is affected, and how often?
+      placeholder: When Claude Code needs a package registry, I have to ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like AgentACL to do?
+      description: The behaviour you'd like, as concretely as you can (commands, console screens, policy YAML).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds you use today, or other approaches.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Enforcement (sandbox, network)
+        - Console (agentacl ui)
+        - Policy language
+        - Agents and discovery
+        - Audit and reporting
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: Could this let an agent reach something it shouldn't? AgentACL never widens access implicitly.

@@ -11,4 +11,4 @@ if [[ "$name" != "Chaitanya Sistla" ]]; then
   echo "commit-msg: author would be '$name'; AgentACL commits are authored by Chaitanya Sistla only" >&2
   exit 1
 fi
-exec "$root/scripts/check-authorship.sh" --message "$1"
+exec "$root/scripts/check-authorship.sh" --maintainer --message "$1"

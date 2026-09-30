@@ -1,0 +1,91 @@
+name: Bug report
+description: Something in AgentACL doesn't work as documented.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **don't** include secrets, tokens or private file contents.
+        Security vulnerabilities go to [private advisories](https://github.com/chaitanya-sistla/agentacl/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        I ran `agentacl run -- claude` in my project and asked it to read README.md.
+        Expected: the read works. Actual: "Operation not permitted".
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the problem.
+      placeholder: |
+        1. mkdir demo && cd demo && git init
+        2. agentacl run -- /bin/cat README.md
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - agentacl run (sandbox / enforcement)
+        - Network (proxy, sites, approvals)
+        - Console (agentacl ui)
+        - Policy language / policy check
+        - Discovery (discover, agents)
+        - Audit log (events)
+        - Install / release
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - Copilot CLI
+        - OpenCode
+        - Other / none
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: AgentACL version
+      description: Output of `agentacl --version`.
+      placeholder: agentacl 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and chip
+      description: e.g. "macOS 26.1, Apple M3" (Apple menu → About This Mac).
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        Helpful: `agentacl status`, `agentacl policy check --path <path>` or `agentacl events --limit 20`.
+        Remove anything private before pasting.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this isn't a duplicate.
+          required: true
+        - label: I removed secrets, tokens and private paths from this report.
+          required: true

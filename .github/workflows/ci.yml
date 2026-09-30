@@ -21,7 +21,7 @@ env:
 
 jobs:
   authorship:
-    name: Authorship (Chaitanya Sistla only)
+    name: Authorship (no AI or bot attribution)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +41,21 @@ jobs:
           else
             scripts/check-authorship.sh --all
           fi
+      - name: Pull request description credits no AI tool
+        if: github.event_name == 'pull_request'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s' "$BODY" | grep -qiE 'generated (with|by) \[?(claude|chatgpt|copilot|cursor|codex|gemini|aider|devin|windsurf|codeium|an? ai)|🤖|co-authored-by:.*(claude|anthropic|copilot|openai|\[bot\])'; then
+            echo "::error::the pull request description credits an AI tool; remove that line"; exit 1
+          fi
+
+  spelling:
+    name: Spell check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@v1.50.3
 
   hygiene:
     name: Repo hygiene
@@ -168,7 +183,7 @@ jobs:
   all-green:
     name: All checks passed
     if: always()
-    needs: [authorship, hygiene, rust, x86_64, msrv, console, dependencies]
+    needs: [authorship, spelling, hygiene, rust, x86_64, msrv, console, dependencies]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job

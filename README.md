@@ -163,4 +163,9 @@ lists every guarantee and limitation.
 - [macOS enforcement](docs/macos-enforcement.md)
 - [Changelog](CHANGELOG.md) · [Releasing](docs/releasing.md)
 
+## Contributing
+
+Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+Report security issues privately ([SECURITY.md](SECURITY.md)).
+
 Built and maintained by Chaitanya Sistla · [Apache-2.0](LICENSE)

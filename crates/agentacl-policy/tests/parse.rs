@@ -72,9 +72,9 @@ fn wrong_version() {
 #[test]
 fn unknown_key_rejected() {
     let e = parse_doc("version: v1\nfilesytem: {}\n", Layer::User, "u").unwrap_err();
-    assert!(e.to_string().contains("filesytem"), "{e}");
-    let e = parse_doc("version: v1\nfilesystem:\n  alow_read: []\n", Layer::User, "u").unwrap_err();
-    assert!(e.to_string().contains("alow_read"), "{e}");
+    assert!(e.to_string().contains("filesytem"), "{e}"); // spellchecker:disable-line
+    let e = parse_doc("version: v1\nfilesystem:\n  alow_read: []\n", Layer::User, "u").unwrap_err(); // spellchecker:disable-line
+    assert!(e.to_string().contains("alow_read"), "{e}"); // spellchecker:disable-line
 }
 
 #[test]

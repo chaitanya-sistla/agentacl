@@ -4,5 +4,5 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 base=$(git merge-base HEAD origin/main 2>/dev/null || true)
-if [[ -n "$base" ]]; then scripts/check-authorship.sh "$base..HEAD"; else scripts/check-authorship.sh --all; fi
+if [[ -n "$base" ]]; then scripts/check-authorship.sh --maintainer "$base..HEAD"; else scripts/check-authorship.sh --maintainer --all; fi
 cargo fmt --all --check

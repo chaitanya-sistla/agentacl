@@ -34,7 +34,7 @@ workflow manually with `dry_run` checked.
 
 | Stage | Gate |
 |---|---|
-| Preflight | Tag is `vX.Y.Z[-pre.N]`; tag, `Cargo.toml` and `package.json` versions agree; the tagged commit is on `main`; the tag is annotated and created by Chaitanya Sistla; `CHANGELOG.md` has a dated section for the version; every commit in history passes the authorship check |
+| Preflight | Tag is `vX.Y.Z[-pre.N]`; tag, `Cargo.toml` and `package.json` versions agree; the tagged commit is on `main`; the tag is annotated and created by Chaitanya Sistla; `CHANGELOG.md` has a dated section for the version; every commit in history passes the authorship check (no AI or bot attribution) |
 | Full CI | Everything in `ci.yml`: authorship, repo hygiene, `rustfmt`, `clippy -D warnings`, `rustdoc -D warnings`, tests on two macOS versions, the Intel build, the minimum supported Rust, the console typecheck and build with committed-output check, `npm audit`, `cargo-deny` (advisories, licenses, bans, sources), `shellcheck`, `actionlint` |
 | Build | `--release --locked` for `aarch64-apple-darwin` and `x86_64-apple-darwin` (macOS 13+), with architecture and version checks |
 | Package | Universal binary (`lipo`). Code signing and notarization when the signing secrets exist (ad-hoc signature otherwise). Smoke tests of the packaged binary (`--version`, `status`, `discover`, secret denials, a `run --dry-run`). Archives for universal, arm64 and x86_64. `SHA256SUMS`, verified. A GitHub build-provenance attestation |
@@ -53,11 +53,19 @@ Add these repository secrets to ship signed and notarized binaries:
 
 ## 5. Authorship
 
-AgentACL is authored by Chaitanya Sistla only. `scripts/check-authorship.sh`
-(CI, release preflight, `.githooks`) rejects:
-- commits with another author;
-- `Co-authored-by` trailers;
-- tool-attribution lines;
-- a `Signed-off-by` for anyone else.
+`scripts/check-authorship.sh` has two modes.
 
-Enable the hooks once per clone with `git config core.hooksPath .githooks`.
+- **Contributor mode** runs in CI and in release preflight. Anyone may author
+  a commit, but it rejects:
+  - commits authored or committed by bots or AI tools;
+  - `Co-authored-by` trailers that credit an AI tool;
+  - "Generated with ..." lines.
+
+  CI applies the same check to the pull request description.
+- **Maintainer mode** runs in the local hooks (`git config core.hooksPath
+  .githooks`) and in `scripts/check.sh`. In addition:
+  - the maintainer's own commits must be authored by Chaitanya Sistla;
+  - they carry no co-author trailers.
+
+Only the maintainer can create release tags (tag ruleset, and preflight
+checks the tagger).

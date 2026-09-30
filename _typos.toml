@@ -1,0 +1,18 @@
+# Spell check (crate-ci/typos), run in CI on every pull request.
+[default]
+# A line ending in `spellchecker:disable-line` is skipped (deliberate
+# misspellings in parser tests).
+extend-ignore-re = ["(?Rm)^.*(#|//|<!--)\\s*spellchecker:disable-line(\\s*-->)?$"]
+
+[default.extend-words]
+# Identifiers, not typos: `mch_` machine ids and `anc` (ancestor) variables.
+mch = "mch"
+anc = "anc"
+
+[files]
+extend-exclude = [
+  "crates/agentacl-cli/src/ui/dist/**",
+  "**/package-lock.json",
+  "Cargo.lock",
+  "LICENSE",
+]
