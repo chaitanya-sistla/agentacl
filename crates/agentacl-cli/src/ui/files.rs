@@ -186,7 +186,7 @@ pub fn children(ctx: &Ctx, dir: &Path, offset: usize, limit: usize, force: bool)
         return Ok(json!({ "path": dir, "display": term_safe(&dir.to_string_lossy()), "parent": dir.parent(), "needs_force": true, "total": 0, "entries": [] }));
     }
     let mut names: Vec<(String, bool)> = std::fs::read_dir(&dir)?.flatten().filter_map(|e| e.file_type().ok().map(|t| (e.file_name().to_string_lossy().into_owned(), t.is_dir()))).collect();
-    names.sort_by(|a, b| (!a.1, a.0.to_lowercase()).cmp(&(!b.1, b.0.to_lowercase())));
+    names.sort_by_cached_key(|(name, is_dir)| (!*is_dir, name.to_lowercase()));
     let total = names.len();
     let parent_has_link = has_symlink_component(&dir);
     let limit = limit.clamp(1, MAX_PAGE);
