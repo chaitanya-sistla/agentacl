@@ -155,6 +155,23 @@ directory and covers the whole machine.
   **Review & save** shows exactly what changes, then offers to restart the
   agents still using the old rules.
 - **Activity:** the audit log, with filters, pagination and CSV export.
+- **Requests:** what agents tried and couldn't, grouped into decisions.
+  - **Allow…** on a refused folder or site asks *for which agent* (this one
+    or every agent) and *where* (this project or everywhere), and for files,
+    read or read and change. It's saved as a small policy file in
+    `~/.config/agentacl/access/`; the Agents page lists every grant, with
+    Remove. Built-in protections can't be granted, and neither can your
+    whole home folder at once.
+  - A site applies to running agents at once. A file needs a restart: the
+    kernel sandbox is fixed when an agent starts, so a file request can't
+    wait for you. The restart bar restarts the agents concerned (the
+    conversation resumes) and shows whether each came back.
+  - With Network set to *Ask me*, agents waiting on a site are listed at the
+    top with a countdown and **+1 min**. The wait is a setting: 30 seconds,
+    1, 2 or 5 minutes.
+  - Notifications come at most once a minute across all agents, as a
+    digest (each refused thing counted once). **Quiet** silences them for an
+    hour or until you turn them back on; requests still appear here.
 
 The console opens with a single-use link. Supervised agents can't reach it,
 and it can do nothing the CLI can't (`ui.md`).

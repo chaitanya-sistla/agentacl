@@ -31,6 +31,23 @@ section whose heading matches the tag, so every release needs one.
 - The `kube` group now protects all of `~/.kube`, not just files named
   `config`.
 
+### Added (console)
+- **Allow a request for one agent, in one project.** "Allow…" on a refused
+  folder or site asks which agent (this one or all) and where (this
+  project or everywhere), and for files, read or read and change. Saved as
+  an access file in `~/.config/agentacl/access/`. Sites apply at once; files
+  apply when the agent restarts. The Agents page lists every grant, with
+  Remove.
+- **Waiting requests on the Requests page**, with a countdown, "+1 min" and
+  "always allow, for this agent only". The wait is now a setting: 30 s
+  (default), 1, 2 or 5 minutes.
+- **Notification digest and quiet mode.** At most one notification a minute
+  across all agents; refused files and sites are summarized, each counted
+  once; quiet for an hour or until turned back on.
+- **Restart tracking.** After Restart, the console shows whether the agent
+  came back, the restart was refused (and why) or the agent exited, instead
+  of "Restarting" forever.
+
 ### Changed
 - Python run by an agent always keeps its bytecode cache in the session's
   temp directory (`PYTHONPYCACHEPREFIX`), instead of probing

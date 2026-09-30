@@ -353,14 +353,24 @@ them.
   - The proxy queues one prompt per `host:port`. Limits: at most 8 prompts
     per session; at most 16 connections waiting per site and 64 per session.
     Anything beyond those is refused at once.
-  - The proxy posts a macOS notification at most every 8 s.
-  - Every connection waiting on a prompt shares its deadline (25 s). No answer
-    means blocked. An expired or already-answered prompt can't be answered.
+  - Notifications are shared by every supervisor (`notify.json` in the state
+    directory, under a file lock): the first waiting site after a quiet
+    minute notifies at once; everything else (more sites, refused files and
+    sites the human can act on, each counted once) goes into a digest sent at
+    most once a minute. Quiet mode (on, or for a while) drops them; requests
+    still appear in the console. `AGENTACL_NO_NOTIFY` turns them off (tests).
+  - Every connection waiting on a prompt shares its deadline: the console's
+    wait setting (30 s, 1, 2 or 5 min; default 30 s), plus one minute for
+    each "+1 min" (at most 5). No answer means blocked. An expired or
+    already-answered prompt can't be answered or extended. Clients with
+    their own shorter timeout give up first.
   - Answers:
     - **once**: the connections waiting now;
     - **session**: this `host:port` for the rest of the session;
     - **always**: the console also saves an allow rule for the host, any
-      port;
+      port. For every agent it goes to the user policy; "for this agent
+      only" goes to that agent's access file
+      (docs/design/access-requests.md) and a scoped live rule;
     - **block**;
     - **block-always**: also saves a block rule.
   - The notification text is passed to `osascript` as an argument, never as
@@ -417,7 +427,8 @@ counts, top blocked and most used sites, and blocks by kind.
 | The UI grants more than the CLI can | Same sources and dry-run as `run`. Built-ins are never in writable files. Project scope is restrict-only. Trust is bound to path + sha and has a CLI equivalent |
 | A save breaks a running session on relaunch | Dry-run before restart (§4.7) |
 | An agent approves its own connections | Approvals and live rules live in the state directory, which agents can't write (`agentacl-self`). The answer comes only from the authenticated console |
-| An agent floods the human with prompts | One prompt per host, at most 8 waiting per session, a notification at most every 8 s. Unanswered means blocked |
+| An agent floods the human with prompts | One prompt per host, at most 8 waiting per session, notifications at most once a minute across all agents (a digest), each refused thing counted once, quiet mode. Unanswered means blocked |
+| A grant from a request widens past what was asked | One access file per scope, named from its `match:` (the agent id is hashed into the name; a mismatched file is refused). Access files hold only plain allow rules (no `except`, host names only, no `defaults`, `builtin.disable`, deny, process or listen rules) for one literal agent id and one project folder (the session's exact folder, not its git root). Home and top-level folders are refused. The complete policy is loaded and the grant must take effect before it's saved, so built-in protections can't be granted |
 | A console allow widens past policy | It lifts only a *default* denial, never an explicit or built-in one, and never for IP literals or localhost; address checks still run |
 
 ## 6. Audit vocabulary

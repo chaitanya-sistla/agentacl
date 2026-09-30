@@ -129,8 +129,12 @@ the machine.
 | **Network:** allow or block sites live, or set unknown sites to *Ask me* | **Agents:** protected or not, restart or stop |
 | ![AgentACL network page listing sites AI agents connected to, with allow and block](docs/images/network.png) | ![AgentACL agents page showing protected and unprotected Claude Code and Codex sessions](docs/images/agents.png) |
 
-With Network set to *Ask me*, an agent reaching a new site waits up to 25
-seconds while you allow or block it, with a desktop notification.
+With Network set to *Ask me*, an agent reaching a new site waits while you
+allow or block it (30 seconds by default, up to 5 minutes, plus "+1 min").
+Files can't wait: the kernel refuses them at once. They show up as requests
+you can allow for one agent and one project, then apply with a restart (the
+conversation resumes). Notifications come at most once a minute, as a
+digest, and can be silenced.
 
 ## A real Claude Code session
 
