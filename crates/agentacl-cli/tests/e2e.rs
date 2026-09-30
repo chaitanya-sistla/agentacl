@@ -27,7 +27,11 @@ impl Env {
 
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_agentacl"));
-        c.current_dir(&self.project).env("AGENTACL_HOME", self.root.join("state")).env("AGENTACL_CONFIG_DIR", self.root.join("config")).stdin(std::process::Stdio::null());
+        c.current_dir(&self.project)
+            .env("AGENTACL_NO_NOTIFY", "1")
+            .env("AGENTACL_HOME", self.root.join("state"))
+            .env("AGENTACL_CONFIG_DIR", self.root.join("config"))
+            .stdin(std::process::Stdio::null());
         c
     }
 
@@ -248,9 +252,13 @@ fn policy_change_hint() {
     std::fs::write(&p, "version: v1\n").unwrap();
     // The agent cannot write .agentacl (protected), so change it from outside while it sleeps.
     let mut c = e.cmd();
-    c.args(["run", "--", "/bin/sh", "-c", "sleep 1.5"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    c.args(["run", "--", "/bin/sh", "-c", "touch started; sleep 1.5"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let child = c.spawn().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // Change it once the agent runs (the session's baseline is taken before launch).
+    let t0 = std::time::Instant::now();
+    while !e.project.join("started").exists() && t0.elapsed() < std::time::Duration::from_secs(20) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     std::fs::write(&p, "version: v1\nfilesystem:\n  deny_read: [\"${PROJECT}/x\"]\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(text(&out).contains("Policy changed during this session"), "{}", text(&out));

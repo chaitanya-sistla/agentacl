@@ -345,6 +345,34 @@ fn sandbox_moved_directory_keeps_secret_names() {
     let _ = std::fs::remove_dir_all(&shared);
 }
 
+/// A grant made from the console for one agent opens the path for that agent
+/// only, in the real kernel sandbox.
+#[test]
+fn sandbox_access_grant_is_per_agent() {
+    use crate::access::{store, with_rule, Grant, Scope};
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.home.join("o2/src")).unwrap();
+    std::fs::write(f.home.join("o2/src/main.rs"), "o2-ok").unwrap();
+    let paths = crate::config::Paths::with_dirs(f.home.clone(), f.state.clone(), f.config.clone());
+    let o2 = format!("{}/o2/**", f.home.display());
+    let (n, y) = with_rule(&paths, &Scope { agent: Some("claude-code".into()), project: None }, Grant::Read, &o2).unwrap().unwrap();
+    store(&paths, &n, Some(&y)).unwrap();
+    let mut src = builtin_sources(true);
+    src.extend(crate::access::sources(&paths).unwrap());
+    let pol = PolicySet::load(src, &f.vars(), &LoadOptions::default()).unwrap();
+    let project = f.project.to_string_lossy().into_owned();
+    let prof = |agent: &str| {
+        let text = sbpl::compile_profile(&pol, &CompileInput { agent_id: agent, project: &project, ..input() }).unwrap();
+        let p = f.root.join(format!("profile-{agent}.sb"));
+        std::fs::write(&p, text).unwrap();
+        p
+    };
+    let (c, o) = f.run(&prof("claude-code"), "cat $H/o2/src/main.rs");
+    assert_eq!((c, o.as_str()), (0, "o2-ok"), "granted to Claude");
+    let (c, o) = f.run(&prof("codex"), "cat $H/o2/src/main.rs");
+    assert!(c != 0 && o.contains("Operation not permitted"), "not granted to Codex: {c} {o}");
+}
+
 #[test]
 fn sandbox_writes_and_exec_persistence() {
     let f = Fixture::new();

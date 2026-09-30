@@ -1,6 +1,7 @@
 //! AgentACL core: macOS process facts, agent identity, sessions, enforcement
 //! backends, observers and the audit store.
 
+pub mod access;
 pub mod agents;
 pub mod audit;
 pub mod config;
@@ -12,6 +13,7 @@ pub mod identity;
 pub mod netcat;
 pub mod netlive;
 pub mod netproxy;
+pub mod notify;
 pub mod observe;
 pub mod proc;
 pub mod session;

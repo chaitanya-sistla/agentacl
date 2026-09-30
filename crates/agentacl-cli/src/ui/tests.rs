@@ -416,3 +416,227 @@ fn approvals_answer_and_always_saves_a_rule() {
     // A second answer finds nothing waiting.
     assert_eq!(t.post(&tok, "/api/approvals/answer", serde_json::json!({ "id": a.id, "answer": "always" })).0, 400);
 }
+
+#[test]
+fn restart_status_reports_the_real_outcome() {
+    use agentacl_core::audit::{EventContext, LifecycleEvent, LifecycleKind, SessionRecord, Store};
+    let t = tempfile::tempdir().unwrap();
+    let store = Store::open(&t.path().join("a.db")).unwrap();
+    let rec = |id: &str, sup: i32, started: &str| SessionRecord {
+        session_id: id.into(),
+        identity_json: "{}".into(),
+        agent: "claude-code".into(),
+        project: "/p".into(),
+        policy_name: "user".into(),
+        policy_sha256: "x".into(),
+        backend: "seatbelt".into(),
+        supervisor_pid: sup,
+        agent_pid: None,
+        started_at: started.into(),
+        ended_at: None,
+        exit_code: None,
+    };
+    let since = "2026-01-01T00:00:10.000Z";
+    let state = |old: &str, alive: bool| super::api::restart_state(&store, old, since, |_| alive).unwrap()["state"].as_str().unwrap().to_string();
+
+    // Still running, nothing new yet.
+    store.insert_session(&rec("agt_A", 100, "2026-01-01T00:00:00.000Z")).unwrap();
+    assert_eq!(state("agt_A", true), "restarting");
+    // Relaunched by the same supervisor: the new session is prepared (and
+    // stamped) before the old one ends.
+    store.end_session("agt_A", "2026-01-01T00:00:12.000Z", Some(0)).unwrap();
+    assert_eq!(state("agt_A", true), "restarting", "ended, successor not registered yet");
+    store.insert_session(&rec("agt_B", 100, "2026-01-01T00:00:11.000Z")).unwrap();
+    let v = super::api::restart_state(&store, "agt_A", since, |_| true).unwrap();
+    assert_eq!((v["state"].as_str(), v["session"].as_str()), (Some("restarted"), Some("agt_B")));
+
+    // Refused: the agent keeps running and says why.
+    store.insert_session(&rec("agt_C", 200, "2026-01-01T00:00:00.000Z")).unwrap();
+    let ctx = EventContext { human: "u".into(), machine: "m".into(), agent: "claude-code".into(), agent_version: None, session: "agt_C".into(), backend: "seatbelt".into() };
+    store.record_lifecycle(&ctx, LifecycleEvent { kind: LifecycleKind::RestartRefused, pid: None, detail: "restart refused: bad rule".into() }).unwrap();
+    // Many later events don't hide it.
+    for _ in 0..600 {
+        store.record_lifecycle(&ctx, LifecycleEvent { kind: LifecycleKind::BackendWarning, pid: None, detail: "noise".into() }).unwrap();
+    }
+    assert!(super::api::restart_state(&store, "agt_C", "", |_| true).is_err(), "the request time is required");
+    let v = super::api::restart_state(&store, "agt_C", since, |_| true).unwrap();
+    assert_eq!(v["state"], "refused");
+    assert!(v["detail"].as_str().unwrap().contains("bad rule"));
+
+    // Exited without coming back; a successor from an unrelated supervisor doesn't count.
+    store.insert_session(&rec("agt_D", 300, "2026-01-01T00:00:00.000Z")).unwrap();
+    store.end_session("agt_D", "2026-01-01T00:00:11.000Z", Some(1)).unwrap();
+    store.insert_session(&rec("agt_E", 301, "2026-01-01T00:00:12.000Z")).unwrap();
+    assert_eq!(state("agt_D", false), "exited");
+}
+
+#[test]
+fn access_grants_scopes_and_removal() {
+    let t = setup();
+    let tok = t.login();
+    let home = agentacl_core::config::user_home().unwrap();
+    let sd = agentacl_core::supervisor::canon_or(&t.st.paths.state_dir);
+    let proj = t.project.to_string_lossy().into_owned();
+    let o2 = format!("{}/agentacl-test-o2", home.display());
+    let grant = |v: serde_json::Value| t.post(&tok, "/api/access/allow", v);
+
+    // A folder, for Claude, in this project.
+    let (s, r) = grant(serde_json::json!({ "kind": "read", "target": o2, "dir": true, "agent": "claude-code", "project": proj, "for_agent": "claude-code" }));
+    assert_eq!(s, 200, "{r}");
+    let file = r["file"].as_str().unwrap().to_string();
+    assert!(file.starts_with("agent-claude-code-") && file.contains('@') && t.st.paths.config_dir.join("access").join(&file).exists());
+    let (_, l) = t.get(&tok, "/api/access?agent=claude-code");
+    let entry = l["access"].as_array().unwrap().iter().find(|e| e["file"] == file.as_str()).unwrap().clone();
+    assert_eq!(entry["project"], proj.as_str());
+    assert_eq!(entry["rules"][0]["pattern"], format!("{o2}/**"));
+    assert!(t.get(&tok, "/api/access?agent=codex").1["access"].as_array().unwrap().iter().all(|e| e["file"] != file.as_str()), "filtered by agent");
+
+    // Built-in protections can't be allowed; one agent can't grant for another.
+    let (s, r) = grant(serde_json::json!({ "kind": "read", "target": format!("{}/.ssh", home.display()), "dir": true, "agent": "claude-code", "for_agent": "claude-code" }));
+    assert_eq!(s, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("protect-secrets"), "{r}");
+    assert_eq!(grant(serde_json::json!({ "kind": "read", "target": o2, "agent": "codex", "for_agent": "claude-code" })).0, 400);
+    assert_eq!(grant(serde_json::json!({ "kind": "read", "target": "relative/path", "for_agent": "claude-code" })).0, 400);
+    assert_eq!(grant(serde_json::json!({ "kind": "read", "target": format!("{o2}/*"), "for_agent": "claude-code" })).0, 400);
+    let lower = home.display().to_string().to_lowercase();
+    for broad in [
+        home.display().to_string(),
+        lower,
+        format!("{}/.", home.display()),
+        format!("/System/Volumes/Data{}", home.display()),
+        "/Users".into(),
+        "/Library".into(),
+        "/private/var".into(),
+        "/private/etc".into(),
+        "/private/tmp".into(),
+        "/".into(),
+    ] {
+        let (s, r) = grant(serde_json::json!({ "kind": "read", "target": broad, "dir": true, "for_agent": "claude-code" }));
+        assert_eq!(s, 400, "{broad}: {r}");
+    }
+
+    // A site, for Claude everywhere: saved and live, scoped, removable.
+    let (s, r) = grant(serde_json::json!({ "kind": "site", "target": "API.Example.com", "agent": "claude-code", "for_agent": "claude-code" }));
+    assert_eq!(s, 200, "{r}");
+    let live = agentacl_core::netlive::read_live(&sd);
+    let rule = live.rules.iter().find(|r| r.host == "api.example.com").unwrap();
+    assert_eq!((rule.agent.as_deref(), rule.project.as_deref()), (Some("claude-code"), None));
+    let claude_file = agentacl_core::access::file_name(&agentacl_core::access::Scope { agent: Some("claude-code".into()), project: None });
+    let claude_src = format!("access:{}", claude_file.trim_end_matches(".yaml"));
+    assert_eq!(rule.source.as_deref(), Some(claude_src.as_str()));
+    // The same site for every agent too; removing Claude's grant keeps that one working.
+    assert_eq!(grant(serde_json::json!({ "kind": "site", "target": "api.example.com", "for_agent": "claude-code" })).0, 200);
+    let (s, r) = t.post(&tok, "/api/access/remove", serde_json::json!({ "file": claude_file, "section": "network.allow", "pattern": "api.example.com" }));
+    assert_eq!(s, 200, "{r}");
+    let live = agentacl_core::netlive::read_live(&sd);
+    assert!(!live.rules.iter().any(|r| r.host == "api.example.com" && r.source.as_deref() == Some(claude_src.as_str())));
+    assert!(live.revoked.iter().any(|r| r.host == "api.example.com" && r.policy.as_deref() == Some(claude_src.as_str())));
+    assert!(live.rules.iter().any(|r| r.host == "api.example.com" && r.source.as_deref() == Some("access:all") && r.effect == agentacl_policy::Effect::Allow), "the every-agent grant stays live");
+    assert!(!t.st.paths.config_dir.join("access").join(&claude_file).exists(), "empty access file removed");
+    // A hand edit that drops a site drops its live rule too.
+    std::fs::remove_file(t.st.paths.config_dir.join("access/all.yaml")).unwrap();
+    t.get(&tok, "/api/access");
+    assert!(!agentacl_core::netlive::read_live(&sd).rules.iter().any(|r| r.source.as_deref() == Some("access:all")));
+
+    // "Only in this project" is the exact folder the session uses, not its git root.
+    let sub = t.project.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let (s, r) = grant(serde_json::json!({ "kind": "read", "target": o2, "dir": true, "agent": "claude-code", "project": sub.to_string_lossy(), "for_agent": "claude-code" }));
+    assert_eq!(s, 200, "{r}");
+    let (_, l) = t.get(&tok, "/api/access");
+    assert!(l["access"].as_array().unwrap().iter().any(|e| e["file"] == r["file"] && e["project"] == sub.to_string_lossy().as_ref()), "{l}");
+}
+
+#[test]
+fn waiting_requests_extend_and_scoped_always() {
+    let t = setup();
+    let tok = t.login();
+    let sd = agentacl_core::supervisor::canon_or(&t.st.paths.state_dir);
+    let a = agentacl_core::netlive::Approval {
+        id: agentacl_core::netlive::new_id(),
+        session: "agt_x".into(),
+        agent: "claude-code".into(),
+        project: t.project.to_string_lossy().into(),
+        host: "pypi.org".into(),
+        port: 443,
+        created: agentacl_core::audit::now_rfc3339(),
+        expires: "2999-01-01T00:00:00.000Z".into(),
+    };
+    agentacl_core::netlive::request(&sd, &a).unwrap();
+    let (s, r) = t.post(&tok, "/api/approvals/extend", serde_json::json!({ "id": a.id }));
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(r["expires"], "2999-01-01T00:01:00.000Z");
+    assert_eq!(t.post(&tok, "/api/network/wait", serde_json::json!({ "secs": 45 })).0, 400);
+    assert_eq!(t.post(&tok, "/api/network/wait", serde_json::json!({ "secs": 120 })).0, 200);
+    assert_eq!(agentacl_core::netlive::read_live(&sd).ask_timeout_secs, Some(120));
+
+    // "Always, for this agent" goes to Claude's access file, not the policy file.
+    let (s, r) = t.post(&tok, "/api/approvals/answer", serde_json::json!({ "id": a.id, "answer": "always", "agent_only": true }));
+    assert_eq!(s, 200, "{r}");
+    let f = agentacl_core::access::file_name(&agentacl_core::access::Scope { agent: Some("claude-code".into()), project: None });
+    let y = std::fs::read_to_string(t.st.paths.config_dir.join("access").join(f)).unwrap();
+    assert!(y.contains("pypi.org") && y.contains("claude-code"), "{y}");
+    assert!(!std::fs::read_to_string(&t.st.paths.user_policy).unwrap_or_default().contains("pypi.org"));
+}
+
+#[test]
+fn quiet_mode_settings() {
+    let t = setup();
+    let tok = t.login();
+    let (_, v) = t.get(&tok, "/api/notify");
+    assert_eq!((v["quiet"].as_bool(), v["wait_secs"].as_u64()), (Some(false), Some(30)));
+    let (s, v) = t.post(&tok, "/api/notify", serde_json::json!({ "quiet": true, "minutes": 60 }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["quiet"], false, "temporary, not permanent");
+    assert!(v["quiet_until"].is_string());
+    assert_eq!(t.post(&tok, "/api/notify", serde_json::json!({ "quiet": true, "minutes": 0 })).0, 400);
+    let (_, v) = t.post(&tok, "/api/notify", serde_json::json!({ "quiet": true }));
+    assert_eq!((v["quiet"].as_bool(), v["quiet_until"].is_null()), (Some(true), true));
+    let (_, v) = t.post(&tok, "/api/notify", serde_json::json!({ "quiet": false }));
+    assert_eq!(v["quiet"], false);
+}
+
+#[test]
+fn access_edge_cases() {
+    let t = setup();
+    let tok = t.login();
+    let sd = agentacl_core::supervisor::canon_or(&t.st.paths.state_dir);
+    let grant = |v: serde_json::Value| t.post(&tok, "/api/access/allow", v);
+
+    // Your own block is named as yours, not as a built-in protection.
+    assert_eq!(t.post(&tok, "/api/network/rule", serde_json::json!({ "host": "b.example.com", "effect": "block" })).0, 200);
+    let (s, r) = grant(serde_json::json!({ "kind": "site", "target": "b.example.com", "agent": "claude-code", "for_agent": "claude-code" }));
+    assert_eq!(s, 400);
+    assert!(r["error"].as_str().unwrap().contains("your own rule"), "{r}");
+
+    // A site removed from an access file by hand is revoked for running sessions.
+    assert_eq!(grant(serde_json::json!({ "kind": "site", "target": "h.example.com", "for_agent": "claude-code" })).0, 200);
+    std::fs::remove_file(t.st.paths.config_dir.join("access/all.yaml")).unwrap();
+    t.get(&tok, "/api/access");
+    let live = agentacl_core::netlive::read_live(&sd);
+    assert!(!live.rules.iter().any(|r| r.host == "h.example.com"));
+    assert!(live.revoked.iter().any(|r| r.host == "h.example.com" && r.policy.as_deref() == Some("access:all")));
+    // …and one added by hand gets a live rule.
+    std::fs::write(t.st.paths.config_dir.join("access/all.yaml"), "version: v1\nnetwork:\n  allow: [\"hand.example.com\"]\n").unwrap();
+    t.get(&tok, "/api/access");
+    assert!(agentacl_core::netlive::read_live(&sd).rules.iter().any(|r| r.host == "hand.example.com" && r.source.as_deref() == Some("access:all")));
+
+    // Removing a site from the policy file revokes it for sessions that
+    // loaded it, even though Claude also has its own grant (which stays live).
+    assert_eq!(t.post(&tok, "/api/network/rule", serde_json::json!({ "host": "p.example.com", "effect": "allow" })).0, 200);
+    assert_eq!(grant(serde_json::json!({ "kind": "site", "target": "p.example.com", "agent": "claude-code", "for_agent": "claude-code" })).0, 200);
+    assert_eq!(t.post(&tok, "/api/network/rule", serde_json::json!({ "host": "p.example.com", "effect": "none" })).0, 200);
+    let live = agentacl_core::netlive::read_live(&sd);
+    assert!(live.revoked.iter().any(|r| r.host == "p.example.com" && r.policy.is_none()), "{:?}", live.revoked);
+    assert!(live.rules.iter().any(|r| r.host == "p.example.com" && r.agent.as_deref() == Some("claude-code")), "Claude's grant is re-added");
+
+    // A stray file is listed as broken (not fatal) and can be removed.
+    std::fs::write(t.st.paths.config_dir.join("access/all copy.yaml"), "version: v1\n").unwrap();
+    let (s, l) = t.get(&tok, "/api/access");
+    assert_eq!(s, 200, "{l}");
+    assert_eq!(l["broken"][0]["file"], "all copy.yaml");
+    assert!(l["access"].as_array().unwrap().iter().any(|e| e["file"] == "all.yaml"), "the valid files still load");
+    assert_eq!(t.post(&tok, "/api/access/remove", serde_json::json!({ "file": "all.yaml", "broken": true })).0, 400, "only broken files");
+    assert_eq!(t.post(&tok, "/api/access/remove", serde_json::json!({ "file": "all copy.yaml", "broken": true })).0, 200);
+    assert!(!t.st.paths.config_dir.join("access/all copy.yaml").exists());
+}

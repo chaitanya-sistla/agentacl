@@ -31,6 +31,7 @@ pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, S
         (Method::Post, "/api/reveal") => reveal(body),
         (Method::Get, "/api/sessions") => sessions(st),
         (Method::Post, "/api/sessions/restart") => restart(st, body),
+        (Method::Get, "/api/sessions/restart-status") => restart_status(st, q),
         (Method::Get, "/api/events") => events(st, q),
         (Method::Get, "/api/policy") => get_policy(st, q),
         (Method::Post, "/api/policy/preview") => preview(st, body),
@@ -46,6 +47,13 @@ pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, S
         (Method::Get, "/api/approvals") => super::network::approvals(st),
         (Method::Post, "/api/approvals/answer") => super::network::approval_answer(st, body),
         (Method::Get, "/api/requests") => super::network::requests(st, q),
+        (Method::Get, "/api/access") => super::access::list(st, q),
+        (Method::Post, "/api/access/allow") => super::access::allow(st, body),
+        (Method::Post, "/api/access/remove") => super::access::remove(st, body),
+        (Method::Post, "/api/approvals/extend") => super::access::extend(st, body),
+        (Method::Post, "/api/network/wait") => super::access::set_wait(st, body),
+        (Method::Get, "/api/notify") => super::access::notify_get(st),
+        (Method::Post, "/api/notify") => super::access::notify_set(st, body),
         (Method::Post, "/api/requests/dismiss") => super::network::request_dismiss(st, body),
         _ => Ok((404, json!({ "error": "not found" }))),
     }
@@ -67,7 +75,7 @@ fn scope_of(v: Option<&str>) -> Result<Scope> {
 /// $HOME and its ancestors refused). With no project given, a neutral empty
 /// placeholder (`/private/var/empty`, canonical: `/var` is a symlink) stands in for `${PROJECT}`: nothing depends on
 /// the directory the console was started from.
-fn project_of(v: Option<&str>) -> Result<PathBuf> {
+pub fn project_of(v: Option<&str>) -> Result<PathBuf> {
     match v.filter(|s| !s.is_empty()) {
         Some(p) => identity::resolve_project(Path::new(p), None, &home()?),
         None => Ok(PathBuf::from(NO_PROJECT)),
@@ -396,6 +404,35 @@ fn sessions(st: &Arc<UiState>) -> Reply {
     Ok((200, json!({ "sessions": session_list(st)? })))
 }
 
+/// How a restart requested at `since` went: `restarted` (with the new
+/// session), `refused` (the new rules were invalid; the agent keeps running),
+/// `exited` (the agent ended without a relaunch) or still `restarting`.
+pub fn restart_state(store: &agentacl_core::audit::Store, old: &str, since: &str, supervisor_alive: impl Fn(i32) -> bool) -> Result<Value> {
+    if since.is_empty() {
+        bail!("since (the restart request time) is required");
+    }
+    let s = store.session(old)?.context("unknown session")?;
+    // The relaunch is prepared (and stamped) before the old session ends, so
+    // compare with the request time, not the old session's end.
+    if let Some(n) = store.successor_session(s.supervisor_pid, old, since)? {
+        return Ok(json!({ "state": "restarted", "session": n.session_id }));
+    }
+    if let Some(detail) = store.last_event_since(old, "restart.refused", since)? {
+        return Ok(json!({ "state": "refused", "detail": detail }));
+    }
+    if s.ended_at.is_some() && !supervisor_alive(s.supervisor_pid) {
+        return Ok(json!({ "state": "exited" }));
+    }
+    Ok(json!({ "state": "restarting" }))
+}
+
+fn restart_status(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
+    let id = q.get("session").context("session required")?;
+    let since = q.get("since").map(String::as_str).unwrap_or("");
+    let store = st.store.lock().unwrap();
+    Ok((200, restart_state(&store, id, since, |pid| proc::facts(pid).is_some())?))
+}
+
 fn restart(st: &Arc<UiState>, body: &Value) -> Reply {
     let id = body["session"].as_str().context("session required")?;
     let s = {
@@ -406,9 +443,14 @@ fn restart(st: &Arc<UiState>, body: &Value) -> Reply {
     if !ident["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "restart")) {
         bail!("this session was started by an older agentacl without restart support; exit the agent and run it again");
     }
+    // Stamped before the signal: the relaunch may be prepared at once.
+    let requested_at = agentacl_core::audit::now_rfc3339();
     supervisor::request_restart(supervisor::verified_supervisor(&s)?)?;
     st.store.lock().unwrap().record_ui(&st.ctx, "session.restart_requested", id, "relaunch under current policy requested from the UI")?;
-    Ok((200, json!({ "ok": true, "note": "The supervisor validates the new policy first; if it is invalid the agent keeps running and a restart.refused event appears." })))
+    Ok((
+        200,
+        json!({ "ok": true, "requested_at": requested_at, "note": "The supervisor validates the new policy first; if it is invalid the agent keeps running and a restart.refused event appears." }),
+    ))
 }
 
 fn events(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {

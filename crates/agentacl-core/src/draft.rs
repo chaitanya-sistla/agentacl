@@ -84,6 +84,7 @@ pub fn sources(paths: &Paths, scope: Scope, project: &Path, draft: Option<&str>)
     if let Some(y) = user {
         src.push(PolicySource { layer: Layer::User, name: "user".into(), yaml: y });
     }
+    src.extend(crate::access::sources(paths)?);
     if let Some(y) = proj {
         src.push(PolicySource { layer: Layer::Project, name: "project".into(), yaml: y });
     }
@@ -91,6 +92,31 @@ pub fn sources(paths: &Paths, scope: Scope, project: &Path, draft: Option<&str>)
 }
 
 pub fn check(paths: &Paths, agent_id: &str, project: &Path, scope: Scope, draft: Option<&str>) -> Result<DraftCheck> {
+    check_sources(paths, agent_id, project, sources(paths, scope, project, draft)?)
+}
+
+/// As [`check`], with access document `name` replaced by `yaml` (or removed).
+pub fn check_access(paths: &Paths, agent_id: &str, project: &Path, name: &str, yaml: Option<&str>) -> Result<DraftCheck> {
+    let source = format!("access:{}", name.trim_end_matches(".yaml"));
+    let mut src = sources(paths, Scope::User, project, None)?;
+    src.retain(|s| s.name != source);
+    if let Some(y) = yaml {
+        let doc = agentacl_policy::raw::parse_doc(y, Layer::User, name)?;
+        crate::access::check_doc(&doc, name)?;
+        src.push(PolicySource { layer: Layer::User, name: source, yaml: y.to_string() });
+    }
+    check_sources(paths, agent_id, project, src)
+}
+
+/// As [`check`] on disk, without the console's access files: what the policy
+/// files alone decide.
+pub fn check_policy_files(paths: &Paths, agent_id: &str, project: &Path) -> Result<DraftCheck> {
+    let mut src = sources(paths, Scope::User, project, None)?;
+    src.retain(|s| !s.name.starts_with("access:"));
+    check_sources(paths, agent_id, project, src)
+}
+
+fn check_sources(paths: &Paths, agent_id: &str, project: &Path, src: Vec<PolicySource>) -> Result<DraftCheck> {
     let reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
     let mut lopts = LoadOptions { trusted_project_sha256: trust::hashes_for(paths, project)?, generated: vec![] };
     if agents::provider(agent_id).is_some() {
@@ -103,7 +129,7 @@ pub fn check(paths: &Paths, agent_id: &str, project: &Path, scope: Scope, draft:
             reason: format!("{agent_id} runtime requirement"),
         });
     }
-    let policy = PolicySet::load(sources(paths, scope, project, draft)?, &vars(paths, project)?, &lopts)?;
+    let policy = PolicySet::load(src, &vars(paths, project)?, &lopts)?;
     let proj_s = project.to_string_lossy().into_owned();
     // Same compiler as `run` (catches compile-only errors).
     crate::enforce::sbpl::compile_profile(

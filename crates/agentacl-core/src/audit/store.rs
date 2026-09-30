@@ -204,6 +204,22 @@ impl Store {
         Ok(self.conn.query_row("SELECT * FROM sessions WHERE session_id = ?1", params![session_id], row_session).optional()?)
     }
 
+    /// The newest `action` event of `session` at or after `since`: its resource.
+    pub fn last_event_since(&self, session: &str, action: &str, since: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT resource FROM events WHERE session_id = ?1 AND action = ?2 AND ts >= ?3 ORDER BY rowid DESC LIMIT 1", params![session, action, since], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// The session a supervisor started after `after` (a restart's relaunch).
+    pub fn successor_session(&self, supervisor_pid: i32, previous: &str, after: &str) -> Result<Option<SessionRecord>> {
+        Ok(self
+            .conn
+            .query_row("SELECT * FROM sessions WHERE supervisor_pid = ?1 AND session_id != ?2 AND started_at >= ?3 ORDER BY started_at LIMIT 1", params![supervisor_pid, previous, after], row_session)
+            .optional()?)
+    }
+
     pub fn active_sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut st = self.conn.prepare("SELECT * FROM sessions WHERE ended_at IS NULL ORDER BY started_at")?;
         let rows = st.query_map([], row_session)?.collect::<rusqlite::Result<Vec<_>>>()?;

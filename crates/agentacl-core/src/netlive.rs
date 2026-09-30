@@ -29,11 +29,16 @@ use std::time::{Duration, Instant};
 
 pub const LIVE_FILE: &str = "network-live.json";
 pub const APPROVALS_DIR: &str = "approvals";
-/// How long a connection waits for the human. Shorter than common client
-/// connect timeouts so the agent sees a clean refusal, not a hang.
-pub const ASK_TIMEOUT: Duration = Duration::from_secs(25);
-/// At most one desktop notification per session in this window.
-const NOTIFY_EVERY: Duration = Duration::from_secs(8);
+/// How long a connection waits for the human unless the console chose
+/// another of [`WAIT_CHOICES`].
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Waits the console offers, in seconds.
+pub const WAIT_CHOICES: [u64; 4] = [30, 60, 120, 300];
+/// Each "+1 min" from the console adds this, at most [`MAX_EXTENSIONS`] times.
+pub const EXTENSION: Duration = Duration::from_secs(60);
+pub const MAX_EXTENSIONS: u32 = 5;
+/// Approval files are kept until the longest possible wait is over, plus a minute.
+const PRUNE_AFTER: Duration = Duration::from_secs(300 + 5 * 60 + 60);
 /// A session can't queue more than this many prompts at once…
 const MAX_PENDING: usize = 8;
 /// …nor hold more than this many connections waiting (per site / in total);
@@ -60,14 +65,33 @@ pub struct LiveRule {
     pub effect: Effect,
     /// RFC 3339; an allow applies to sessions started before this.
     pub at: String,
+    /// Only sessions of this agent (all agents if absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Only sessions in this project (all projects if absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// The access file that holds the durable rule (`access:<name>`); absent
+    /// for rules mirrored from the user policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
-/// An allow removed from the user policy. Sessions that started before `at`
-/// may have loaded it; for them the host is treated as not allowed.
+impl LiveRule {
+    pub fn applies(&self, agent: &str, project: &str) -> bool {
+        self.agent.as_deref().is_none_or(|a| a == agent) && self.project.as_deref().is_none_or(|p| p == project)
+    }
+}
+
+/// An allow removed from the user policy (or, with `policy`, from that access
+/// document). Sessions that started before `at` may have loaded it; for them
+/// the host is treated as not allowed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revocation {
     pub host: String,
     pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +102,9 @@ pub struct Live {
     pub rules: Vec<LiveRule>,
     #[serde(default)]
     pub revoked: Vec<Revocation>,
+    /// How long a connection waits for an answer (one of [`WAIT_CHOICES`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_timeout_secs: Option<u64>,
 }
 
 /// Lowercase, no trailing dot, no port.
@@ -120,13 +147,83 @@ pub fn set_rule(state_dir: &Path, host: &str, effect: Option<Effect>) -> Result<
     let key = host_key(host);
     let _g = LIVE_LOCK.lock().unwrap();
     let mut live = read_live(state_dir);
-    live.rules.retain(|r| r.host != key);
+    live.rules.retain(|r| !(r.host == key && r.source.is_none()));
     if let Some(e) = effect {
         if e == Effect::Ask {
             bail!("a site rule is allow or block");
         }
-        live.rules.push(LiveRule { host: key, effect: e, at: crate::audit::now_rfc3339() });
+        live.rules.push(LiveRule { host: key, effect: e, at: crate::audit::now_rfc3339(), agent: None, project: None, source: None });
     }
+    write_live(state_dir, &live)
+}
+
+/// A console rule whose durable copy is in access document `source`
+/// (`access:<name>`), for `agent` / `project` only when given. Replaces the
+/// rule for the same host from the same source.
+pub fn set_scoped_rule(state_dir: &Path, host: &str, effect: Effect, agent: Option<&str>, project: Option<&str>, source: &str) -> Result<()> {
+    if !is_named_host(host) {
+        bail!("{host:?} is not a host name");
+    }
+    if effect == Effect::Ask {
+        bail!("a site rule is allow or block");
+    }
+    let key = host_key(host);
+    let _g = LIVE_LOCK.lock().unwrap();
+    let mut live = read_live(state_dir);
+    live.rules.retain(|r| !(r.host == key && r.source.as_deref() == Some(source)));
+    live.rules.push(LiveRule { host: key, effect, at: crate::audit::now_rfc3339(), agent: agent.map(str::to_string), project: project.map(str::to_string), source: Some(source.into()) });
+    write_live(state_dir, &live)
+}
+
+/// Removes the console rule for `host` that came from access document
+/// `source`, and revokes that document's allow for sessions that loaded it.
+pub fn remove_scoped_rule(state_dir: &Path, host: &str, source: &str) -> Result<()> {
+    let key = host_key(host);
+    let _g = LIVE_LOCK.lock().unwrap();
+    let mut live = read_live(state_dir);
+    live.rules.retain(|r| !(r.host == key && r.source.as_deref() == Some(source)));
+    live.revoked.retain(|r| !(r.host == key && r.policy.as_deref() == Some(source)));
+    live.revoked.push(Revocation { host: key, at: crate::audit::now_rfc3339(), policy: Some(source.into()) });
+    cap_revoked(&mut live);
+    write_live(state_dir, &live)
+}
+
+/// Drops console rules from access documents that no longer allow them, and
+/// revokes those documents' allows for sessions that loaded them. `present`
+/// holds `(source, host)` for every site an access file allows.
+pub fn retain_access_rules(state_dir: &Path, present: &std::collections::BTreeSet<(String, String)>) -> Result<()> {
+    let _g = LIVE_LOCK.lock().unwrap();
+    let mut live = read_live(state_dir);
+    let gone: Vec<(String, String)> = live.rules.iter().filter_map(|r| r.source.clone().map(|s| (s, r.host.clone()))).filter(|k| !present.contains(k)).collect();
+    if gone.is_empty() {
+        return Ok(());
+    }
+    live.rules.retain(|r| r.source.as_ref().is_none_or(|s| present.contains(&(s.clone(), r.host.clone()))));
+    let now = crate::audit::now_rfc3339();
+    for (source, host) in gone {
+        live.revoked.retain(|r| !(r.host == host && r.policy.as_deref() == Some(source.as_str())));
+        live.revoked.push(Revocation { host, at: now.clone(), policy: Some(source) });
+    }
+    cap_revoked(&mut live);
+    write_live(state_dir, &live)
+}
+
+/// A revocation only matters to sessions older than it; keep a bounded list.
+fn cap_revoked(live: &mut Live) {
+    let len = live.revoked.len();
+    if len > 500 {
+        live.revoked.drain(..len - 500);
+    }
+}
+
+/// Sets how long a connection waits for an answer.
+pub fn set_wait(state_dir: &Path, secs: u64) -> Result<()> {
+    if !WAIT_CHOICES.contains(&secs) {
+        bail!("the wait must be one of {WAIT_CHOICES:?} seconds");
+    }
+    let _g = LIVE_LOCK.lock().unwrap();
+    let mut live = read_live(state_dir);
+    live.ask_timeout_secs = Some(secs);
     write_live(state_dir, &live)
 }
 
@@ -137,9 +234,13 @@ pub fn reconcile(state_dir: &Path, allow: &std::collections::BTreeSet<String>, d
     let _g = LIVE_LOCK.lock().unwrap();
     let mut live = read_live(state_dir);
     let before = live.rules.len();
-    live.rules.retain(|r| match r.effect {
-        Effect::Allow => allow.contains(&r.host),
-        _ => deny.contains(&r.host),
+    // Rules from access documents are kept: those files aren't the policy file.
+    live.rules.retain(|r| {
+        r.source.is_some()
+            || match r.effect {
+                Effect::Allow => allow.contains(&r.host),
+                _ => deny.contains(&r.host),
+            }
     });
     if live.rules.len() != before {
         write_live(state_dir, &live)?;
@@ -156,15 +257,11 @@ pub fn revoke(state_dir: &Path, hosts: &[String]) -> Result<()> {
     let mut live = read_live(state_dir);
     let now = crate::audit::now_rfc3339();
     for h in hosts.iter().map(|h| host_key(h)).filter(|h| is_named_host(h)) {
-        live.revoked.retain(|r| r.host != h);
-        live.rules.retain(|r| !(r.host == h && r.effect == Effect::Allow));
-        live.revoked.push(Revocation { host: h, at: now.clone() });
+        live.revoked.retain(|r| !(r.host == h && r.policy.is_none()));
+        live.rules.retain(|r| !(r.host == h && r.effect == Effect::Allow && r.source.is_none()));
+        live.revoked.push(Revocation { host: h, at: now.clone(), policy: None });
     }
-    // A revocation only matters to sessions older than it; keep a bounded list.
-    let len = live.revoked.len();
-    if len > 500 {
-        live.revoked.drain(..len - 500);
-    }
+    cap_revoked(&mut live);
     write_live(state_dir, &live)
 }
 
@@ -261,6 +358,43 @@ pub fn answer(state_dir: &Path, id: &str, ans: Answer) -> Result<Approval> {
     Ok(a)
 }
 
+/// Gives a waiting request one more [`EXTENSION`] (at most
+/// [`MAX_EXTENSIONS`] times). Returns the request with its new expiry.
+pub fn extend(state_dir: &Path, id: &str) -> Result<Approval> {
+    if !valid_id(id) {
+        bail!("invalid approval id");
+    }
+    // Concurrent "+1 min"s must not share a count (the console is threaded).
+    static EXTEND_LOCK: Mutex<()> = Mutex::new(());
+    let _g = EXTEND_LOCK.lock().unwrap();
+    let dir = fsafe::open_dir(&approvals_dir(state_dir))?;
+    let mut a: Approval = match fsafe::read_regular(&dir, &format!("{id}.json"))? {
+        Some(b) => serde_json::from_slice(&b)?,
+        None => bail!("no such request (it may have timed out)"),
+    };
+    if a.expires <= crate::audit::now_rfc3339() {
+        bail!("this request timed out; the connection was already refused");
+    }
+    if matches!(fsafe::read_regular(&dir, &format!("{id}.answer")), Ok(Some(_))) {
+        bail!("this request was already answered");
+    }
+    let n = read_extensions(state_dir, id);
+    if n >= MAX_EXTENSIONS {
+        bail!("this request can't wait any longer");
+    }
+    let secs = crate::audit::parse_ts(&a.expires).unwrap_or(0) + EXTENSION.as_secs() as i64;
+    let millis = a.expires.get(20..23).and_then(|m| m.parse().ok()).unwrap_or(0);
+    a.expires = crate::audit::format_rfc3339(secs, millis);
+    fsafe::write_atomic(&dir, &format!("{id}.json"), serde_json::to_vec(&a)?.as_slice())?;
+    fsafe::write_atomic(&dir, &format!("{id}.extend"), (n + 1).to_string().as_bytes())?;
+    Ok(a)
+}
+
+fn read_extensions(state_dir: &Path, id: &str) -> u32 {
+    let Ok(dir) = fsafe::open_dir(&approvals_dir(state_dir)) else { return 0 };
+    fsafe::read_regular(&dir, &format!("{id}.extend")).ok().flatten().and_then(|b| String::from_utf8(b).ok()).and_then(|s| s.trim().parse().ok()).unwrap_or(0).min(MAX_EXTENSIONS)
+}
+
 fn read_answer(state_dir: &Path, id: &str) -> Option<Answer> {
     let dir = fsafe::open_dir(&approvals_dir(state_dir)).ok()?;
     fsafe::read_regular(&dir, &format!("{id}.answer")).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
@@ -276,9 +410,9 @@ pub fn prune(state_dir: &Path) {
             continue;
         }
         let age = e.metadata().and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default()).unwrap_or_default();
-        // Files are written when the prompt is created (and answered), and a
-        // prompt lives ASK_TIMEOUT; after that plus a minute nothing reads them.
-        if age > ASK_TIMEOUT + Duration::from_secs(60) {
+        // Files are written when the prompt is created (answered, extended);
+        // after the longest possible wait plus a minute nothing reads them.
+        if age > PRUNE_AFTER {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -314,13 +448,13 @@ pub struct LiveNetDecider {
     /// RFC 3339 session start.
     pub started_at: String,
     pub notify: bool,
-    /// How long a connection waits for an answer ([`ASK_TIMEOUT`]).
+    /// How long a connection waits for an answer when the console hasn't
+    /// chosen a wait ([`ASK_TIMEOUT`]).
     pub ask_timeout: Duration,
     /// `host:port` approved for this session.
     session_allow: Mutex<HashSet<String>>,
     /// `host:port` → the prompt connections to it are waiting on.
     waiting: Mutex<HashMap<String, Waiting>>,
-    last_notify: Mutex<Option<Instant>>,
 }
 
 impl LiveNetDecider {
@@ -337,7 +471,6 @@ impl LiveNetDecider {
             ask_timeout: ASK_TIMEOUT,
             session_allow: Mutex::new(HashSet::new()),
             waiting: Mutex::new(HashMap::new()),
-            last_notify: Mutex::new(None),
         }
     }
 
@@ -348,6 +481,7 @@ impl LiveNetDecider {
     fn ask(&self, key: &str, port: u16) -> Decision {
         let refuse = |why: String| Self::console(Effect::Deny, "ask", why);
         let site = format!("{key}:{port}");
+        let timeout = read_live(&self.state_dir).ask_timeout_secs.filter(|s| WAIT_CHOICES.contains(s)).map(Duration::from_secs).unwrap_or(self.ask_timeout);
         // One prompt per host:port however many connections wait on it; all of
         // them share the prompt's deadline.
         let (id, deadline) = {
@@ -366,7 +500,10 @@ impl LiveNetDecider {
                     return refuse("too many sites are already waiting for an answer".into());
                 }
                 let now = std::time::SystemTime::now();
-                let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                let stamp = |t: std::time::SystemTime| {
+                    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                    crate::audit::format_rfc3339(d.as_secs() as i64, d.subsec_millis())
+                };
                 let a = Approval {
                     id: new_id(),
                     session: self.session.clone(),
@@ -374,19 +511,19 @@ impl LiveNetDecider {
                     project: self.project.clone(),
                     host: key.to_string(),
                     port,
-                    created: crate::audit::format_rfc3339(secs(now), 0),
-                    expires: crate::audit::format_rfc3339(secs(now + self.ask_timeout), 0),
+                    created: stamp(now),
+                    expires: stamp(now + timeout),
                 };
                 if request(&self.state_dir, &a).is_err() {
                     return refuse("could not queue the request for the console".into());
                 }
-                let deadline = Instant::now() + self.ask_timeout;
+                let deadline = Instant::now() + timeout;
                 w.insert(site.clone(), Waiting { id: a.id.clone(), deadline, waiters: 1 });
                 if self.notify {
-                    let mut last = self.last_notify.lock().unwrap();
-                    if last.is_none_or(|t| t.elapsed() > NOTIFY_EVERY) {
-                        *last = Some(Instant::now());
-                        notify("AgentACL", &format!("{} wants to reach {key}. Allow or block it in the AgentACL console.", self.agent_name));
+                    // Shared across sessions: immediate if nothing was sent
+                    // in the last minute, otherwise into the digest.
+                    if let Ok(Some(text)) = crate::notify::on_waiting(&self.state_dir, &self.agent_name, key, crate::notify::now()) {
+                        crate::notify::send(&text);
                     }
                 }
                 (a.id, deadline)
@@ -396,7 +533,8 @@ impl LiveNetDecider {
             if let Some(a) = read_answer(&self.state_dir, &id) {
                 break Some(a);
             }
-            if Instant::now() >= deadline {
+            // "+1 min" in the console moves every waiter's deadline.
+            if Instant::now() >= deadline + EXTENSION * read_extensions(&self.state_dir, &id) {
                 break None;
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -416,7 +554,7 @@ impl LiveNetDecider {
                 Self::console(Effect::Allow, "approved", format!("{site} approved in the AgentACL console"))
             }
             Some(Answer::Block | Answer::BlockAlways) => refuse(format!("{site} was blocked in the AgentACL console")),
-            None => refuse(format!("no answer in the AgentACL console within {} s", self.ask_timeout.as_secs())),
+            None => refuse(format!("no answer in the AgentACL console within {} s", (timeout + EXTENSION * read_extensions(&self.state_dir, &id)).as_secs())),
         }
     }
 }
@@ -430,7 +568,8 @@ impl NetDecider for LiveNetDecider {
         let key = host_key(host);
         let live = read_live(&self.state_dir);
         // A console block only restricts, so it applies to every session now.
-        if live.rules.iter().any(|r| r.host == key && r.effect == Effect::Deny) {
+        let scoped = |r: &&LiveRule| r.host == key && r.applies(&self.agent, &self.project);
+        if live.rules.iter().filter(scoped).any(|r| r.effect == Effect::Deny) {
             return Self::console(Effect::Deny, "blocked", format!("{key} is blocked in the AgentACL console"));
         }
         // An allow the user has since removed from their policy no longer
@@ -438,7 +577,7 @@ impl NetDecider for LiveNetDecider {
         let revoked = d.effect == Effect::Allow
             && !d.policy.starts_with("provider:")
             && !matches!(d.policy.as_str(), "runtime" | "builtin")
-            && live.revoked.iter().any(|r| r.host == key && self.started_at < r.at);
+            && live.revoked.iter().any(|r| r.host == key && self.started_at < r.at && r.policy.as_deref().is_none_or(|p| p == d.policy));
         if d.effect == Effect::Allow && !revoked {
             return d;
         }
@@ -450,7 +589,7 @@ impl NetDecider for LiveNetDecider {
         if self.session_allow.lock().unwrap().contains(&format!("{key}:{port}")) {
             return Self::console(Effect::Allow, "approved", format!("{key} approved in the AgentACL console"));
         }
-        if live.rules.iter().any(|r| r.host == key && r.effect == Effect::Allow && self.started_at < r.at) {
+        if live.rules.iter().filter(scoped).any(|r| r.effect == Effect::Allow && self.started_at < r.at) {
             return Self::console(Effect::Allow, "allowed", format!("{key} allowed in the AgentACL console"));
         }
         if d.effect == Effect::Ask || live.mode == Mode::Ask {
@@ -487,6 +626,107 @@ mod tests {
     }
 
     const POLICY: &str = "version: v1\ndefaults: {network: deny}\nnetwork:\n  allow: [\"ok.example.com\"]\n  deny: [\"evil.example.com\"]\n";
+
+    /// A decider for `agent`, with an access document granting `acc.example.com` to Claude.
+    fn decider_for(state: &Path, agent: &str, started_at: &str) -> LiveNetDecider {
+        let mut all = agentacl_policy::set::builtin_sources(false);
+        all.push(agentacl_policy::set::PolicySource { layer: agentacl_policy::Layer::User, name: "user".into(), yaml: POLICY.into() });
+        all.push(agentacl_policy::set::PolicySource {
+            layer: agentacl_policy::Layer::User,
+            name: "access:claude-code".into(),
+            yaml: "version: v1\nname: access:claude-code\nmatch: {agents: [claude-code]}\nnetwork:\n  allow: [\"acc.example.com\"]\n".into(),
+        });
+        let vars = agentacl_policy::expand::Vars { home: "/Users/t".into(), project: "/p".into(), tmpdir: "/tmp".into(), agent_state: None, agentacl_state: "/s".into(), agentacl_config: "/c".into() };
+        let set = PolicySet::load(all, &vars, &Default::default()).unwrap();
+        let inner = PolicyNetDecider { policy: Arc::new(set), subject: Subject { agent_id: agent.into(), project: "/p".into(), ..Default::default() } };
+        let mut d = LiveNetDecider::new(inner, state.to_path_buf(), "agt_x".into(), agent.into(), agent.into(), "/p".into(), started_at.into());
+        d.notify = false;
+        d
+    }
+
+    #[test]
+    fn scoped_rules_apply_to_their_agent_only() {
+        let t = tempfile::tempdir().unwrap();
+        let s = t.path();
+        let old = "2026-01-01T00:00:00.000Z";
+        let (claude, codex) = (decider_for(s, "claude-code", old), decider_for(s, "codex", old));
+        assert_eq!(claude.host("acc.example.com", 443).effect, Effect::Allow, "access document applies to Claude");
+        assert_eq!(codex.host("acc.example.com", 443).effect, Effect::Deny, "…and not to Codex");
+
+        set_scoped_rule(s, "new.example.com", Effect::Allow, Some("claude-code"), None, "access:claude-code").unwrap();
+        assert_eq!(claude.host("new.example.com", 443).effect, Effect::Allow);
+        assert_eq!(codex.host("new.example.com", 443).effect, Effect::Deny);
+        set_scoped_rule(s, "ok.example.com", Effect::Deny, Some("codex"), None, "access:codex").unwrap();
+        assert_eq!(codex.host("ok.example.com", 443).effect, Effect::Deny, "scoped block");
+        assert_eq!(claude.host("ok.example.com", 443).effect, Effect::Allow, "another agent's block doesn't apply");
+        set_scoped_rule(s, "other.example.com", Effect::Allow, None, Some("/elsewhere"), "access:all@x").unwrap();
+        assert_eq!(claude.host("other.example.com", 443).effect, Effect::Deny, "another project's allow");
+
+        // The policy-file reconciliation leaves access rules alone.
+        reconcile(s, &Default::default(), &Default::default()).unwrap();
+        assert_eq!(claude.host("new.example.com", 443).effect, Effect::Allow);
+
+        // Removing an access grant revokes that document's allow only.
+        remove_scoped_rule(s, "acc.example.com", "access:claude-code").unwrap();
+        assert_eq!(claude.host("acc.example.com", 443).effect, Effect::Deny, "revoked for a running session");
+        remove_scoped_rule(s, "ok.example.com", "access:claude-code").unwrap();
+        assert_eq!(claude.host("ok.example.com", 443).effect, Effect::Allow, "a user-policy allow of the same host stands");
+        let newer = decider_for(s, "claude-code", "2999-01-01T00:00:00.000Z");
+        assert_eq!(newer.host("acc.example.com", 443).effect, Effect::Allow, "a newer session's own policy decides");
+    }
+
+    #[test]
+    fn wait_is_configurable_and_extendable() {
+        let t = tempfile::tempdir().unwrap();
+        let s = t.path().to_path_buf();
+        set_mode(&s, Mode::Ask).unwrap();
+        assert!(set_wait(&s, 45).is_err(), "only the offered waits");
+        set_wait(&s, 60).unwrap();
+        let d = decider(&s, POLICY, "2026-01-01T00:00:00.000Z");
+        let waiting = std::thread::spawn(move || d.host("slow.example.com", 443));
+        let t0 = Instant::now();
+        let a = loop {
+            if let Some(a) = pending(&s).into_iter().next() {
+                break a;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "no prompt appeared");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let secs = |t: &str| crate::audit::parse_ts(t).unwrap();
+        assert_eq!(secs(&a.expires) - secs(&a.created), 60, "the chosen wait");
+        let e = extend(&s, &a.id).unwrap();
+        assert_eq!(secs(&e.expires) - secs(&a.expires), 60, "+1 min");
+        for _ in 1..MAX_EXTENSIONS {
+            extend(&s, &a.id).unwrap();
+        }
+        assert!(extend(&s, &a.id).is_err(), "capped");
+        answer(&s, &a.id, Answer::Once).unwrap();
+        assert_eq!(waiting.join().unwrap().effect, Effect::Allow);
+        assert!(extend(&s, &a.id).is_err(), "answered requests can't be extended");
+    }
+
+    #[test]
+    fn extension_moves_the_waiting_deadline() {
+        let t = tempfile::tempdir().unwrap();
+        let s = t.path().to_path_buf();
+        set_mode(&s, Mode::Ask).unwrap();
+        let mut d = decider(&s, POLICY, "2026-01-01T00:00:00.000Z");
+        d.ask_timeout = Duration::from_secs(2);
+        let waiting = std::thread::spawn(move || d.host("later.example.com", 443));
+        let t0 = Instant::now();
+        let id = loop {
+            if let Some(a) = pending(&s).into_iter().next() {
+                break a.id;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "no prompt appeared");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        extend(&s, &id).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!waiting.is_finished(), "still waiting past the original deadline");
+        answer(&s, &id, Answer::Once).unwrap();
+        assert_eq!(waiting.join().unwrap().effect, Effect::Allow);
+    }
 
     #[test]
     fn console_block_applies_now_and_allow_only_lifts_defaults() {

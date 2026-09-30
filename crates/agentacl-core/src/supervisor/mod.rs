@@ -20,7 +20,7 @@ use agentacl_policy::set::{builtin_sources, GeneratedDoc, LoadOptions, PolicySet
 use agentacl_policy::{Action, Decision, Effect, Layer, PolicyEngine, Request, Resource, Subject};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -134,6 +134,13 @@ pub fn policy_sources(paths: &Paths, policy_file: Option<&Path>, project: &Path)
     };
     let mut src = builtin_sources(user.is_none());
     src.extend(user);
+    // Grants made from the console; each document's `match:` scopes it. A
+    // broken file is left out (only its grants are lost) and reported.
+    let (docs, broken) = crate::access::scan(paths)?;
+    for (n, why) in broken {
+        eprintln!("agentacl: ignoring access file {n}: {why} (remove it in the console's Agents page)");
+    }
+    src.extend(docs.into_iter().map(|(name, yaml, _)| PolicySource { layer: Layer::User, name: format!("access:{}", name.trim_end_matches(".yaml")), yaml }));
     let proj = project.join(".agentacl/policy.yaml");
     match std::fs::read_to_string(&proj) {
         Ok(y) => src.push(PolicySource { layer: Layer::Project, name: "project".into(), yaml: y }),
@@ -259,6 +266,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
 
     let disabled = policy.disabled_groups(&agent.id, &proj_s);
     let policy_name = if opts.policy_file.is_some() || paths.user_policy.exists() { "user" } else { "default" };
+    let inputs = policy_inputs(paths, opts, &project, &agent.id);
     let session = Session {
         session_id,
         human,
@@ -274,7 +282,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         started_at: now_rfc3339(),
         agentacl_version: Some(env!("CARGO_PKG_VERSION").into()),
         features: vec!["restart".into(), "ui-port-deny".into(), "network-live".into()],
-        policy_sources: policy_inputs(paths, opts, &project).into_iter().map(|p| crate::session::PolicyInput { sha256: input_sha(paths, &p), path: p }).collect(),
+        policy_sources: inputs.into_iter().map(|p| crate::session::PolicyInput { sha256: input_sha(paths, &p), path: p }).collect(),
     };
     let watch = integrity::watch_list(&project, &session.human.home);
     let p = Prepared { session, policy, reqs, rules, agent_argv, extra_denies, exec_deny_literals, socket_denies, watch, session_dir };
@@ -341,9 +349,33 @@ struct Live {
     sentinel: String,
     sentinel_seen: AtomicBool,
     warnings: Mutex<Vec<String>>,
+    /// State dir (notifications), agent display name and the human's home.
+    state_dir: PathBuf,
+    agent_name: String,
+    home: String,
+    /// Refusals already passed to the notifier (a burst of the same denial
+    /// takes the shared lock once).
+    refused_seen: Mutex<HashSet<String>>,
 }
 
 impl Live {
+    /// Counts a refusal the human can act on into the notification digest.
+    fn note_refused(&self, e: &crate::audit::Event) {
+        if !matches!(e.decision, Some(Effect::Deny))
+            || !crate::notify::actionable(&e.action, &e.resource, e.policy.as_deref().unwrap_or_default(), e.rule_id.as_deref().unwrap_or_default(), &self.home)
+        {
+            return;
+        }
+        let key = format!("{}|{}", e.action, e.resource);
+        {
+            let mut seen = self.refused_seen.lock().unwrap();
+            if seen.len() >= 10_000 || !seen.insert(key.clone()) {
+                return;
+            }
+        }
+        let _ = crate::notify::on_refused(&self.state_dir, &self.agent_name, &key, crate::notify::now());
+    }
+
     fn warn(&self, msg: String) {
         if let Ok(s) = self.store.lock() {
             let _ = s.record_lifecycle(&self.ctx, LifecycleEvent { kind: LifecycleKind::BackendWarning, pid: None, detail: msg.clone() });
@@ -406,6 +438,7 @@ impl Live {
                 let ev = EnforcedEvent::from_kernel(&d, chain, decision, 1);
                 if let Ok(s) = self.store.lock() {
                     if let Ok(e) = s.record_enforced(&self.ctx, ev) {
+                        self.note_refused(&e);
                         self.dup_index.lock().unwrap().insert(key, e.id);
                     }
                 }
@@ -569,13 +602,16 @@ pub fn request_restart(pid: i32) -> Result<()> {
 
 /// The policy files a session was built from; a change means the running
 /// session's (fixed) sandbox no longer matches the policy on disk.
-fn policy_inputs(paths: &Paths, opts: &RunOptions, project: &Path) -> Vec<PathBuf> {
-    vec![
+fn policy_inputs(paths: &Paths, opts: &RunOptions, project: &Path, agent: &str) -> Vec<PathBuf> {
+    let mut v = vec![
         canon_or(&opts.policy_file.clone().unwrap_or_else(|| paths.user_policy.clone())),
         project.join(".agentacl/policy.yaml"),
         // Only this project's trust entries, not the whole trust file.
         PathBuf::from(format!("{}#{}", paths.trust_file.display(), project.display())),
-    ]
+    ];
+    // The console's access files that can apply to this agent here.
+    v.extend(crate::access::applicable(paths, agent, project));
+    v
 }
 
 /// Current fingerprint of a policy input: file bytes, or (for the virtual
@@ -584,6 +620,23 @@ pub fn input_sha(paths: &Paths, input: &Path) -> Option<String> {
     let s = input.to_string_lossy();
     match s.split_once('#') {
         Some((_, project)) => crate::trust::fingerprint(paths, Path::new(project)),
+        // Sites in an access file reach running agents live (scoped console
+        // rules), so only its file rules need a restart.
+        None if input.parent() == Some(crate::access::dir(paths).as_path()) => {
+            let bytes = std::fs::read(input).ok()?;
+            match agentacl_policy::raw::parse_doc(&String::from_utf8_lossy(&bytes), agentacl_policy::Layer::User, "access") {
+                Ok(mut d) => {
+                    d.network = Default::default();
+                    // Only sites: the same as no file.
+                    let f = &d.filesystem;
+                    if f.allow_read.is_empty() && f.allow_write.is_empty() && f.deny_read.is_empty() && f.deny_write.is_empty() {
+                        return None;
+                    }
+                    Some(agentacl_policy::set::sha256_hex(agentacl_policy::emit::to_yaml(&d).as_bytes()))
+                }
+                Err(_) => Some(agentacl_policy::set::sha256_hex(&bytes)),
+            }
+        }
         None => std::fs::read(input).ok().map(|b| agentacl_policy::set::sha256_hex(&b)),
     }
 }
@@ -640,7 +693,7 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared, try_next: &mut d
     };
     let store = Store::open(&paths.db_path)?;
     let before: BTreeMap<PathBuf, Option<String>> = integrity::snapshot_hashes(&p.watch);
-    let policy_files = policy_inputs(paths, opts, &s.project);
+    let policy_files = policy_inputs(paths, opts, &s.project, &s.agent.id);
     let policy_before = input_hashes(paths, &policy_files);
 
     // Sentinel for knowing the log stream is live / drained (must exist to be reported).
@@ -658,6 +711,10 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared, try_next: &mut d
         sentinel: sentinel_s,
         sentinel_seen: AtomicBool::new(false),
         warnings: Mutex::new(vec![]),
+        state_dir: canon_or(&paths.state_dir),
+        agent_name: s.agent.display_name.clone(),
+        home: s.human.home.to_string_lossy().into_owned(),
+        refused_seen: Mutex::new(HashSet::new()),
     });
 
     // Proxy.
@@ -676,8 +733,9 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared, try_next: &mut d
     let proxy = crate::netproxy::NetProxy::start_guarded(
         decider,
         Arc::new(move |e: EnforcedEvent| {
-            if let Ok(st) = live_p.store.lock() {
-                let _ = st.record_enforced(&live_p.ctx, e);
+            let recorded = live_p.store.lock().ok().and_then(|st| st.record_enforced(&live_p.ctx, e).ok());
+            if let Some(e) = recorded {
+                live_p.note_refused(&e);
             }
         }),
         Some(guard),
@@ -750,7 +808,14 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared, try_next: &mut d
     let stop = Arc::new(AtomicBool::new(false));
     let (live_t, stop_t) = (live.clone(), stop.clone());
     let poller = std::thread::spawn(move || {
+        let mut next_flush = Instant::now();
         while !stop_t.load(Ordering::SeqCst) {
+            if Instant::now() >= next_flush {
+                next_flush = Instant::now() + Duration::from_secs(5);
+                if let Ok(Some(text)) = crate::notify::flush(&live_t.state_dir, crate::notify::now()) {
+                    crate::notify::send(&text);
+                }
+            }
             let snap = proc::snapshot();
             let changes = live_t.tree.lock().unwrap().as_mut().map(|t| t.refresh(&snap)).unwrap_or_default();
             for c in changes {

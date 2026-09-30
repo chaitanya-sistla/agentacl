@@ -186,11 +186,30 @@ pub fn reconcile_live(st: &Arc<UiState>, before: Option<&HostSets>) -> Result<()
     let Ok((allow, deny)) = policy_hosts(st) else { return Ok(()) };
     netlive::reconcile(&state_dir(st), &allow, &deny)?;
     if let Some((was_allowed, _)) = before {
-        let mut ev = SiteEval::new(st);
-        let gone: Vec<String> = was_allowed.difference(&allow).filter(|h| netlive::is_named_host(h)).filter(|h| ev.eval(h, &[], 443)["effect"] != "allow").cloned().collect();
+        // Revoke what the policy files alone no longer allow (access grants
+        // are re-added below, per agent, by sync_live).
+        let files = draft::check_policy_files(&st.paths, "claude-code", Path::new(super::api::NO_PROJECT)).ok().map(|c| c.policy);
+        let still = |h: &str| {
+            use agentacl_policy::PolicyEngine;
+            files.as_ref().is_some_and(|set| {
+                let subject = agentacl_policy::Subject { agent_id: "claude-code".into(), project: super::api::NO_PROJECT.into(), ..Default::default() };
+                let d = set.evaluate(&agentacl_policy::Request { subject, action: agentacl_policy::Action::NetConnect, resource: agentacl_policy::Resource::Host { host: h.into(), port: 443 } });
+                d.effect == Effect::Allow && !d.policy.starts_with("provider:")
+            })
+        };
+        let gone: Vec<String> = was_allowed.difference(&allow).filter(|h| netlive::is_named_host(h)).filter(|h| !still(h)).cloned().collect();
         netlive::revoke(&state_dir(st), &gone)?;
+        // A host an access file still grants keeps working for those agents.
+        for h in &gone {
+            super::access::sync_live(st, Some(h))?;
+        }
     }
     Ok(())
+}
+
+/// The user policy file allows `host` by name.
+pub fn policy_allows(st: &Arc<UiState>, host: &str) -> bool {
+    policy_hosts(st).is_ok_and(|(allow, _)| allow.contains(&netlive::host_key(host)))
 }
 
 // ---- sites ------------------------------------------------------------------------
@@ -316,7 +335,19 @@ pub fn approval_answer(st: &Arc<UiState>, body: &Value) -> Reply {
     let mut saved = Value::Null;
     if matches!(ans, Answer::Always | Answer::BlockAlways) {
         let a = netlive::pending(&state_dir(st)).into_iter().find(|a| a.id == id).context("this request is no longer waiting (it may have timed out)")?;
-        saved = apply_site_rule(st, &a.host, Some(if ans == Answer::Always { Effect::Allow } else { Effect::Deny }))?;
+        let (agent_only, project_only) = (body["agent_only"].as_bool().unwrap_or(false), body["project_only"].as_bool().unwrap_or(false));
+        saved = if ans == Answer::Always && (agent_only || project_only) {
+            // Scoped: an access document plus a scoped live rule.
+            let req = json!({
+                "kind": "site", "target": a.host, "for_agent": a.agent,
+                "agent": if agent_only { json!(a.agent) } else { Value::Null },
+                "project": if project_only { json!(a.project) } else { Value::Null },
+            });
+            super::access::allow(st, &req)?.1
+        } else {
+            // Blocks, and allows for every agent everywhere, go to the policy file.
+            apply_site_rule(st, &a.host, Some(if ans == Answer::Always { Effect::Allow } else { Effect::Deny }))?
+        };
     }
     let a = match netlive::answer(&state_dir(st), id, ans) {
         Ok(a) => a,

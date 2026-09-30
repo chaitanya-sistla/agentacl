@@ -47,7 +47,7 @@ fi
 
 # `agentacl` as the demo runs it: minimal environment, demo config and state.
 agentacl() {
-  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" USER="${USER:-demo}" TERM="${TERM:-xterm-256color}" \
+  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" USER="${USER:-demo}" TERM="${TERM:-xterm-256color}" AGENTACL_NO_NOTIFY=1 \
     AGENTACL_CONFIG_DIR="$AGENTACL_CONFIG_DIR" AGENTACL_HOME="$AGENTACL_HOME" "$AGENTACL_BIN_PATH" "$@"
 }
 export -f agentacl

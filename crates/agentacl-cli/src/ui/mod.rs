@@ -8,6 +8,7 @@
 //! - every POST needs `Origin: http://127.0.0.1:PORT` and a JSON body; no CORS
 //! - strict CSP; all dynamic text is inserted with textContent
 
+mod access;
 mod api;
 mod files;
 mod network;
