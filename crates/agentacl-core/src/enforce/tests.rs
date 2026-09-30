@@ -222,7 +222,10 @@ fn sandbox_writes_and_exec_persistence() {
     let pol = f.policy(Some("version: v1\ndefaults: {filesystem: deny}\nfilesystem:\n  allow_read: [\"${PROJECT}/**\"]\n  allow_write: [\"${PROJECT}/**\", \"${HOME}/**\"]\n"));
     let p = f.profile(&pol, input());
     let (c, o) = f.run(&p, "git status --short >/dev/null && echo fine");
-    assert_eq!((c, o.trim()), (0, "fine"), "positive control: git runs");
+    // xcrun may warn that it can't write its tool-location cache in the user
+    // temp dir: that stays denied on purpose (a poisoned cache would redirect
+    // tools for unsandboxed processes). git itself must succeed.
+    assert!(c == 0 && o.lines().any(|l| l == "fine"), "positive control: git runs: {c} {o}");
     let cfg_before = std::fs::read_to_string(f.project.join(".git/config")).unwrap();
     for cmd in [
         "git config core.fsmonitor 'touch /tmp/pwn'",
