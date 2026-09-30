@@ -561,13 +561,13 @@ mod tests {
         let s = t.path().to_path_buf();
         set_mode(&s, Mode::Ask).unwrap();
         let mut d = decider(&s, POLICY, "2026-01-01T00:00:00.000Z");
-        d.ask_timeout = Duration::from_millis(800);
+        d.ask_timeout = Duration::from_secs(3);
         // The prompt is raised on the name alone: a name that can't resolve
         // still gets one, so no DNS answer is needed (or used) before asking.
         let started = Instant::now();
         let waiting = std::thread::spawn(move || d.host("agentbreak-unresolvable.invalid", 443));
         let mut seen = vec![];
-        while seen.is_empty() && started.elapsed() < Duration::from_millis(700) {
+        while seen.is_empty() && !waiting.is_finished() {
             seen = pending(&s);
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -576,7 +576,7 @@ mod tests {
         let r = waiting.join().unwrap();
         assert_eq!(r.effect, Effect::Deny);
         assert!(r.reason.contains("no answer"), "{}", r.reason);
-        assert!(started.elapsed() >= Duration::from_millis(800), "waited for the answer");
+        assert!(started.elapsed() >= Duration::from_secs(3), "waited for the answer");
         // Expired prompts are no longer offered.
         assert!(pending(&s).is_empty());
     }

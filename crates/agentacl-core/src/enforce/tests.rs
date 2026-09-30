@@ -279,7 +279,8 @@ fn sandbox_holds_through_python_and_nested_shells() {
     let py = "/usr/bin/python3";
     // Positive control: Python runs in the sandbox and reads project files.
     let (c, o) = f.run(&prof, &format!("{py} -c \"print(open('README').read(), end='')\""));
-    assert_eq!((c, o.as_str()), (0, "hello readme\n"), "positive control: python works in the sandbox");
+    // (xcrun may warn on stderr that its cache stays closed; see sandbox_writes_and_exec_persistence.)
+    assert!(c == 0 && o.lines().any(|l| l == "hello readme"), "positive control: python works in the sandbox: {c} {o}");
     // A tiny reader, so the nested chains below need no nested quoting.
     std::fs::write(f.project.join("read.py"), "import sys\nprint(open(sys.argv[1]).read())\n").unwrap();
     for script in [
