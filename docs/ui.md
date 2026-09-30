@@ -93,7 +93,13 @@ permissions reach, and **activity** the audit log.
 4. **Policies** (the user policy, which applies to every project). Choose the
    project and agent to preview with. The tabs:
    - **Access map.** Summary cards (this project, home, protected secrets,
-     system) and a tree of what agents can reach, colour-coded by status, with
+     system), then either a **graph** (default) or a list. The graph lays out
+     the agent → areas → folders and files left to right. Each connection
+     is coloured by the access it grants: animated for allowed, dashed with
+     a ✕ for blocked. The selected node's path is highlighted. It pans (drag
+     or scroll), zooms (pinch, ⌘-scroll or buttons) and expands folders in
+     place, showing 12 children at a time. The large groups (secrets,
+     system) start folded. The list shows a tree of what agents can reach, colour-coded by status, with
      "N allowed / blocked inside" hints and paged children. Selecting a node
      explains its read and write decisions in plain words. It offers *Allow
      reading*, *Allow reading & changing*, *Make read-only* and *Block

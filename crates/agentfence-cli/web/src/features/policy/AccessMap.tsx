@@ -1,5 +1,6 @@
 import * as React from 'react'
-import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Link2, Loader2, Lock, ShieldCheck, ShieldX, Eye, Pencil, FolderKanban, House, KeyRound, Cpu } from 'lucide-react'
+import { AccessGraph } from './AccessGraph'
+import { ListTree, Network, ChevronDown, ChevronRight, File, Folder, FolderOpen, Link2, Loader2, Lock, ShieldCheck, ShieldX, Eye, Pencil, FolderKanban, House, KeyRound, Cpu } from 'lucide-react'
 import { post, type FsList, type FsNode, type MapGroup, type Scope } from '@/lib/api'
 import { useApp } from '@/lib/app-context'
 import { explainRule, groupLabel, policyLabel, tildify } from '@/lib/format'
@@ -20,8 +21,22 @@ function explain(d: FsNode['read'], verb: string): string {
   return `Can’t ${verb} — ${why}`
 }
 
-export function AccessMap({ draft, scope, onEditRules }: { draft: PolicyDraft; scope: Scope; onEditRules: () => void }) {
-  const { home } = useApp()
+export function AccessMap({ draft, scope, agent, onEditRules }: { draft: PolicyDraft; scope: Scope; agent: string; onEditRules: () => void }) {
+  const { home, agents } = useApp()
+  const agentName = agents.find((a) => a.id === agent)?.name ?? agent
+  const [view, setView] = React.useState<'graph' | 'list'>(() => {
+    try {
+      return localStorage.getItem('af-map-view') === 'list' ? 'list' : 'graph'
+    } catch {
+      return 'graph'
+    }
+  })
+  const pickView = (v: 'graph' | 'list') => {
+    setView(v)
+    try {
+      localStorage.setItem('af-map-view', v)
+    } catch {}
+  }
   const [groups, setGroups] = React.useState<MapGroup[] | null>(null)
   const [noProject, setNoProject] = React.useState(false)
   const [kids, setKids] = React.useState<Record<string, FsList>>({})
@@ -250,8 +265,21 @@ export function AccessMap({ draft, scope, onEditRules }: { draft: PolicyDraft; s
                 </Tooltip>
               ))}
             </div>
-            {draft.dirty && <Badge variant="warning" className="ml-auto">Showing unsaved changes</Badge>}
+            <div className="ml-auto flex items-center gap-2">
+              {draft.dirty && <Badge variant="warning">Showing unsaved changes</Badge>}
+              <div className="inline-flex rounded-md border p-0.5 text-xs">
+                {(['graph', 'list'] as const).map((v) => (
+                  <button key={v} onClick={() => pickView(v)} className={cn('flex items-center gap-1 rounded px-2 py-1 font-medium', view === v ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+                    {v === 'graph' ? <Network className="size-3.5" /> : <ListTree className="size-3.5" />}
+                    {v === 'graph' ? 'Graph' : 'List'}
+                  </button>
+                ))}
+              </div>
+            </div>
           </CardHeader>
+          {groups && view === 'graph' ? (
+            <AccessGraph agentName={agentName} noProject={noProject} groups={groups} kids={kids} open={open} loading={loading} sel={sel} onSelect={setSel} onToggle={toggle} onMore={more} />
+          ) : (
           <CardContent className="max-h-[68vh] overflow-y-auto p-2" role="tree">
             {!groups ? (
               <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
@@ -266,6 +294,7 @@ export function AccessMap({ draft, scope, onEditRules }: { draft: PolicyDraft; s
               ))
             )}
           </CardContent>
+          )}
         </Card>
 
         <div className="xl:sticky xl:top-20 xl:self-start">

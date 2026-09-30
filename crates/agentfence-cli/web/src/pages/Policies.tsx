@@ -36,11 +36,13 @@ export default function Policies({ tab }: { tab: string }) {
     } catch {}
     if (remembered === null && list.length) setProject(list[0].path)
   }, [projects.data, list])
-  React.useEffect(() => {
+  // Remember only deliberate choices (not the initial empty state).
+  const choose = (v: string) => {
+    setProject(v)
     try {
-      localStorage.setItem(KEY, project)
+      localStorage.setItem(KEY, v)
     } catch {}
-  }, [project])
+  }
 
   // The tab is page state (not a navigation), mirrored into the URL without
   // a hashchange so it never trips the unsaved-changes guard.
@@ -58,7 +60,7 @@ export default function Policies({ tab }: { tab: string }) {
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               Preview in project
-              <NativeSelect className="w-64" value={project} onChange={(e) => { const v = e.target.value; g.guard(() => setProject(v)) }}>
+              <NativeSelect className="w-64" value={project} onChange={(e) => { const v = e.target.value; g.guard(() => choose(v)) }}>
                 <option value="">No project (machine-wide only)</option>
                 {list.map((p) => (
                   <option key={p.path} value={p.path}>

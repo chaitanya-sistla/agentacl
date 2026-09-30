@@ -1,3 +1,5 @@
 version: v1
-name: agentfence-repo
-filesystem: {}
+name: "agentfence-repo"
+filesystem:
+  deny_read:
+    - "${PROJECT}/bumper.yaml"

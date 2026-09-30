@@ -130,7 +130,7 @@ export function PolicyEditor({ scope, project, agent = 'claude-code', tab, onTab
         </TabsList>
         <ErrorText error={tabErr} />
         <TabsContent value="access">
-          <AccessMap draft={draft} scope={scope} onEditRules={() => switchTab('rules')} />
+          <AccessMap draft={draft} scope={scope} agent={agent} onEditRules={() => switchTab('rules')} />
         </TabsContent>
         <TabsContent value="rules">{draft.doc ? <RulesEditor draft={draft} scope={scope} pickerStart={project ?? home} /> : <YamlOnly />}</TabsContent>
         {scope === 'user' && <TabsContent value="builtins">{draft.doc ? <BuiltinProtections draft={draft} /> : <YamlOnly />}</TabsContent>}

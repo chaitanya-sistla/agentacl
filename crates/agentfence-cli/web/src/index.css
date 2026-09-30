@@ -85,3 +85,20 @@
   body { @apply bg-background text-foreground antialiased; font-feature-settings: "cv11", "ss01"; }
   code { @apply font-mono text-[0.85em]; }
 }
+
+/* Access graph: dotted canvas and flowing "allowed" edges. */
+.af-graph {
+  background-color: color-mix(in oklab, var(--muted) 35%, var(--background));
+  background-image: radial-gradient(color-mix(in oklab, var(--foreground) 14%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.af-flow {
+  stroke-dasharray: 10 8;
+  animation: af-flow 1.4s linear infinite;
+}
+@keyframes af-flow {
+  to { stroke-dashoffset: -36; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .af-flow { animation: none; stroke-dasharray: none; }
+}
