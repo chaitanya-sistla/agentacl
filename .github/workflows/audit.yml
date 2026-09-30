@@ -1,0 +1,32 @@
+name: Security audit
+
+# Weekly: known vulnerabilities in Rust and npm dependencies. Findings open
+# no pull requests (every change is made by the maintainer); the run fails
+# and GitHub notifies.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+  npm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/agentacl-cli/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit --audit-level=moderate

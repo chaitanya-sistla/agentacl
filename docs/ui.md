@@ -1,4 +1,4 @@
-# AgentFence Local UI — Design
+# AgentACL Local UI — Design
 
 Status: design, revised after cold reviews 1 and 2 (2026-09-29). This extends the
 iteration-1 scope, which excluded a web UI, at the user's request.
@@ -11,7 +11,7 @@ Make policy easy to apply without editing YAML by hand:
 - **See before saving.** See what an agent gets today and under the draft, for any path.
 - **Save the same YAML the CLI uses.** Files stay the source of truth.
 - **Watch and apply.** See live sessions and denials, and relaunch a session
-  so a change takes effect (`agentfence restart`).
+  so a change takes effect (`agentacl restart`).
 
 Non-goals:
 - No hosted service, accounts, or remote access.
@@ -21,7 +21,7 @@ Non-goals:
 
 ## 2. Shape
 
-`agentfence ui [--port N] [--no-open]` runs in the foreground; Ctrl-C stops it.
+`agentacl ui [--port N] [--no-open]` runs in the foreground; Ctrl-C stops it.
 
 - **Server.** It listens on `127.0.0.1` at a random port, or `--port`.
 - **Credentials.** It mints two values from `/dev/urandom`:
@@ -29,13 +29,13 @@ Non-goals:
   - A **session token** (256 bits). The page gets it by exchanging the code.
     It is set as an `HttpOnly; SameSite=Strict; Path=/` cookie named `af_session_<port>` (browsers send cookies to every port of a host),
     so page script never sees it and reloads keep working. Every API request
-    must **also** carry `X-AgentFence: 1`. A cross-site page can only send a
+    must **also** carry `X-AgentACL: 1`. A cross-site page can only send a
     custom header after a CORS preflight, which the server refuses (OPTIONS
     returns 405), and a present `Origin` must be the console's own. So the
     cookie on its own authorizes nothing. Tests and scripts may use
     `Authorization: Bearer <token>` instead. Each code exchange mints a new
     token and revokes the previous one. When the session ends, the page asks
-    you to press Enter in the `agentfence ui` terminal, which opens a new tab
+    you to press Enter in the `agentacl ui` terminal, which opens a new tab
     with a fresh code.
   - **Replay.** If a code is presented a second time, the server records a
     `ui.code_replay` warning, revokes every token and exits. The page shows
@@ -43,22 +43,22 @@ Non-goals:
 - **Opening the page.** It runs
   `/usr/bin/open http://127.0.0.1:PORT/#code=<hex>` and prints the same URL.
   Anyone who sees the URL later (browser history, process argv) has a dead code.
-- **Records its port.** It writes `${AGENTFENCE_STATE}/ui-<pid>.json`
+- **Records its port.** It writes `${AGENTACL_STATE}/ui-<pid>.json`
   (`{pid, port, started}`, mode 0600, one file per instance) and removes it
   on exit. The proxy reads these files (§5, row 1).
 - **Startup output.** One line: the URL, "press Enter to open it again,
-  Ctrl-C to stop". Problems such as sessions started by an older AgentFence
+  Ctrl-C to stop". Problems such as sessions started by an older AgentACL
   appear as a banner in the console, not as terminal noise.
-- **Machine-wide.** Nothing depends on the directory `agentfence ui` was
+- **Machine-wide.** Nothing depends on the directory `agentacl ui` was
   started from. Agents are discovered across the machine, and projects come
   from sessions, running agents and projects added in the console. The
   machine-wide (user) rules can be viewed with no project selected: a neutral
   empty directory (`/private/var/empty`) stands in for `${PROJECT}`. Project-scope
   operations refuse it.
-- **Implementation.** The server is Rust, in `crates/agentfence-cli/src/ui/`,
+- **Implementation.** The server is Rust, in `crates/agentacl-cli/src/ui/`,
   on `tiny_http`. The console is **React 19 + TypeScript + Vite + Tailwind
   CSS v4**, with shadcn-style components (Radix primitives, `cva`) in
-  `crates/agentfence-cli/web/`. `npm run build` there writes fixed file names
+  `crates/agentacl-cli/web/`. `npm run build` there writes fixed file names
   to `src/ui/dist/` (`index.html`, `assets/app.js`, `assets/app.css`). Those
   are committed and embedded with `include_str!`, so a plain `cargo build`
   needs no Node. The page loads nothing from a CDN or the network, and the
@@ -76,19 +76,19 @@ permissions reach, and **activity** the audit log.
    - 24 h counts: blocked, secrets blocked, running agents (protected vs not),
      projects.
    - An hourly chart of blocked actions and the most-blocked resources.
-   - A banner for agents running **without** AgentFence.
+   - A banner for agents running **without** AgentACL.
 2. **Agents.**
    - *Running*: every known agent process on the machine, with its project
      (from its cwd), whether it is protected, whether its rules are stale, and
      actions (restart under current rules, stop, show in Finder). An
      unprotected agent gets "how to protect it" steps.
    - *Installed*: discovered binaries with version, location and code-signing
-     publisher, plus the `agentfence run` command for each.
+     publisher, plus the `agentacl run` command for each.
 3. **Projects.** A searchable, paginated list: sessions, running agents,
    custom project rules and trust, blocked in the last 24 h. Projects can be
    added with the macOS folder chooser or a typed path. The detail page has
    *Overview*, *Access & rules* and *Activity* tabs. *Access & rules* edits
-   either "this project only" (`.agentfence/policy.yaml`, restrict-only) or
+   either "this project only" (`.agentacl/policy.yaml`, restrict-only) or
    "all projects" (the user policy).
 4. **Policies** (the user policy, which applies to every project). Choose the
    project and agent to preview with. The tabs:
@@ -138,7 +138,7 @@ macOS fixes a sandbox at launch.
 
 ### 4.1 API
 
-Every `/api/*` route requires the session cookie plus `X-AgentFence: 1`, or
+Every `/api/*` route requires the session cookie plus `X-AgentACL: 1`, or
 `Authorization: Bearer <token>`, except `POST /api/session`. JSON in and out.
 
 | Method, path | Purpose |
@@ -146,7 +146,7 @@ Every `/api/*` route requires the session cookie plus `X-AgentFence: 1`, or
 | `POST /api/session` `{code}` | Exchanges the one-time code for a session: sets the `af_session_<port>` HttpOnly cookie and returns `{ok: true}` (the token is never in a body). Returns 401 once the code has been used or has expired |
 | `GET /api/overview` | human, home, backend, ES status, dirs, recent projects |
 | `GET /api/sessions` | active sessions, each with `stale` (§4.4) |
-| `POST /api/sessions/restart` `{session}` | the same version and pid checks as `agentfence restart`, then SIGUSR1. The supervisor validates before stopping the agent (§4.7) |
+| `POST /api/sessions/restart` `{session}` | the same version and pid checks as `agentacl restart`, then SIGUSR1. The supervisor validates before stopping the agent (§4.7) |
 | `GET /api/policy?scope&project&agent` | `{exists, yaml, sha256 (file bytes) \| null, doc, effective, warnings}` |
 | `POST /api/policy/preview` `{scope, project, agent, yaml \| doc}` | `{ok, yaml, doc, effective: {rules, warnings, project_unreadable}, effective_diff, file_diff, comments_lost}`, or `{ok: false, error}` |
 | `POST /api/policy/save` `{scope, project, agent, yaml \| doc, base_sha256 \| null, confirm: [...]}` | §4.3 |
@@ -155,19 +155,19 @@ Every `/api/*` route requires the session cookie plus `X-AgentFence: 1`, or
 | `POST /api/map` `{scope, project, agent, draft}` | Access-map roots: the project, home, protected secrets that exist on this Mac, and system areas. Each node carries a status (full, read-only, partial, blocked, ask), counts of rules inside it, and rule actions. Children come from `fs/list` with `offset`/`limit` paging |
 | `POST /api/pick-folder` `{purpose: project \| folder \| file}` | Opens the native macOS chooser (`osascript`), since the server runs locally as the user. For `project` the chosen path goes through `resolve_project`; for `folder` and `file` it is returned as chosen, to become a rule via `fs/node`. The endpoint is authenticated like the others |
 | `POST /api/fs/node` `{path, scope, project, agent, draft}` | One node (decisions, status, rule actions) for an absolute path |
-| `GET /api/status` | version, user, machine, backend, paths and `warnings` (e.g. sessions from an older AgentFence) |
+| `GET /api/status` | version, user, machine, backend, paths and `warnings` (e.g. sessions from an older AgentACL) |
 | `GET /api/agents[?refresh=1]` | installed agents (discovery cached for 30 s) and live running agents with project, protected flag and session |
-| `GET /api/projects`, `POST /api/projects/add` `{path}`, `POST /api/projects/remove` `{path}` | known projects; added ones are kept in `${AGENTFENCE_STATE}/ui-projects.json` |
+| `GET /api/projects`, `POST /api/projects/add` `{path}`, `POST /api/projects/remove` `{path}` | known projects; added ones are kept in `${AGENTACL_STATE}/ui-projects.json` |
 | `GET /api/stats` | 24 h counts, hourly blocked timeline, top blocked resources |
 | `GET /api/builtins` | secret groups (patterns, enabled) and the always-on protections |
-| `POST /api/sessions/stop` `{session}` | Same checks and signal as `agentfence stop`: SIGTERM to the session's supervisor (verified as an `agentfence` binary that started no later than the session, so a reused pid is refused), which stops the agent |
+| `POST /api/sessions/stop` `{session}` | Same checks and signal as `agentacl stop`: SIGTERM to the session's supervisor (verified as an `agentacl` binary that started no later than the session, so a reused pid is refused), which stops the agent |
 | `POST /api/reveal` `{path}` | shows a path in Finder |
 | `GET /api/events?page&size&kind&q&agent&project&policy&since` | Server-side pagination (`kind`: all, blocked, allowed, observed, system; `q` searches resource, action, rule, policy and agent; `policy` matches one policy exactly; `project` limits to sessions in that project). Also returns 24 h counts |
 
 ### 4.2 Model ↔ YAML
 
 - **Structured editing** works on `RawDoc`, which gets `Serialize`/`Deserialize`.
-- **Emitter** (`agentfence_policy::emit::to_yaml`, implemented):
+- **Emitter** (`agentacl_policy::emit::to_yaml`, implemented):
   - fixed key order;
   - a rule that has only a pattern is emitted as a plain string, anything else as an object;
   - every string is JSON-quoted.
@@ -207,9 +207,9 @@ Every `/api/*` route requires the session cookie plus `X-AgentFence: 1`, or
      project: `open("/")` then `openat(..., O_NOFOLLOW|O_DIRECTORY)` per
      component. The final project fd's (dev, ino) must equal the canonical
      project's (dev, ino).
-   - Then `mkdirat(".agentfence", 0700)` if missing, and
-     `openat(".agentfence", O_NOFOLLOW|O_DIRECTORY)`. The user policy
-     directory (`~/.config/agentfence`) is opened the same way from `$HOME`.
+   - Then `mkdirat(".agentacl", 0700)` if missing, and
+     `openat(".agentacl", O_NOFOLLOW|O_DIRECTORY)`. The user policy
+     directory (`~/.config/agentacl`) is opened the same way from `$HOME`.
    - Read the existing file with `openat(O_NOFOLLOW|O_NONBLOCK)`, and require
      a regular file with `st_nlink == 1`.
    - Write the backup and then the new file. Each goes to a random-named temp
@@ -286,9 +286,9 @@ audited as they happen.)
 
 ### 4.6 Trust (CLI only)
 
-- **CLI.** A new command, `agentfence policy trust [--project P] --sha256 <sha>`:
+- **CLI.** A new command, `agentacl policy trust [--project P] --sha256 <sha>`:
   - It records `{project: <canonical path>, sha256}` in
-    `~/.config/agentfence/config.yaml`, written with the same procedure as
+    `~/.config/agentacl/config.yaml`, written with the same procedure as
     `safe_write`.
   - Only if the file's current bytes still hash to `<sha>`.
   - `policy check` prints the sha to pass.
@@ -317,8 +317,8 @@ relaunch **while the agent is still running**:
 
 | Threat | Control |
 |---|---|
-| A supervised agent drives the UI | **The proxy hard-denies the UI's ports.** For every connection, after resolution and IPv4-mapped normalization, any address that is loopback or unspecified (`0.0.0.0`, `::`), on a port listed in a live `ui-*.json`, is refused whatever the policy says (no user override). If the state directory can't be read, **all** loopback and unspecified destinations are refused (fail closed). `agentfence ui` warns about live sessions whose supervisors lack this check (session `features`). The agent can't read the session token: it lives only in an HttpOnly cookie in the human's browser (and is never returned in a response body), and the proxy refuses the UI's port, so the agent can't reach the API to use it. It also can't read the bootstrap code: other processes' argv is unreadable from the sandbox (threat T23, fixed), and the code is single-use and short-lived. The agent can't write policy files (`agentfence-self`). The UI also warns when a policy allows `localhost` without a port |
-| A malicious web page (CSRF), including a page an agent serves on a `network.listen` port and the human opens | The browser attaches the session cookie (cookies ignore ports; the cookie is named `af_session_<port>`), but the cookie alone authorizes nothing: every API request must also carry `X-AgentFence: 1` or a bearer token, and a cross-origin page can only set those, or `Content-Type: application/json`, after a CORS preflight. SameSite=Strict keeps the cookie off cross-site requests entirely. The server sends no CORS headers and answers `OPTIONS` with 405. **Every POST must carry `Origin: http://127.0.0.1:PORT`** (browsers always send it on POST). `POST /api/session` needs the code, which never reaches another origin |
+| A supervised agent drives the UI | **The proxy hard-denies the UI's ports.** For every connection, after resolution and IPv4-mapped normalization, any address that is loopback or unspecified (`0.0.0.0`, `::`), on a port listed in a live `ui-*.json`, is refused whatever the policy says (no user override). If the state directory can't be read, **all** loopback and unspecified destinations are refused (fail closed). `agentacl ui` warns about live sessions whose supervisors lack this check (session `features`). The agent can't read the session token: it lives only in an HttpOnly cookie in the human's browser (and is never returned in a response body), and the proxy refuses the UI's port, so the agent can't reach the API to use it. It also can't read the bootstrap code: other processes' argv is unreadable from the sandbox (threat T23, fixed), and the code is single-use and short-lived. The agent can't write policy files (`agentacl-self`). The UI also warns when a policy allows `localhost` without a port |
+| A malicious web page (CSRF), including a page an agent serves on a `network.listen` port and the human opens | The browser attaches the session cookie (cookies ignore ports; the cookie is named `af_session_<port>`), but the cookie alone authorizes nothing: every API request must also carry `X-AgentACL: 1` or a bearer token, and a cross-origin page can only set those, or `Content-Type: application/json`, after a CORS preflight. SameSite=Strict keeps the cookie off cross-site requests entirely. The server sends no CORS headers and answers `OPTIONS` with 405. **Every POST must carry `Origin: http://127.0.0.1:PORT`** (browsers always send it on POST). `POST /api/session` needs the code, which never reaches another origin |
 | DNS rebinding | `Host` must be exactly `127.0.0.1:PORT`, otherwise 421. The UI is only ever opened via `127.0.0.1` |
 | Other local users | Loopback only. Credentials are compared in constant time |
 | Credential exposure | The URL carries only the single-use, 60 s code, so history and session restore hold a dead value. The session token is never in a URL, page script or web storage; it is an HttpOnly session cookie. Residual: `/usr/bin/open` hands the URL to the registered http handler app; changing that registration requires unsandboxed same-uid code, which is trusted per the threat model |
@@ -330,7 +330,7 @@ relaunch **while the agent is still running**:
 
 ## 6. Audit vocabulary
 
-`EventSource` gains `Ui`. The UI records these events with `agent: agentfence-ui`
+`EventSource` gains `Ui`. The UI records these events with `agent: agentacl-ui`
 and `session: ui_<ulid>` (the UI process's own id; it has no sessions row):
 
 - `policy.saved`
@@ -357,7 +357,7 @@ and `restart.refused` when a relaunch fails validation.
     - `base_sha256: null` creates the file
     - a planted `.bak` symlink is not followed; the save refuses
     - saving over a trusted project file is refused
-    - a symlinked `.agentfence` directory, or a symlinked project ancestor, aborts the save
+    - a symlinked `.agentacl` directory, or a symlinked project ancestor, aborts the save
     - a code presented twice revokes the token and exits the server
   - Consistency and audit:
     - `fs/list` decisions equal `evaluate`

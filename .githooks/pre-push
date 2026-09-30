@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fast checks before anything leaves this machine (the full set: scripts/check.sh).
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+base=$(git merge-base HEAD origin/main 2>/dev/null || true)
+if [[ -n "$base" ]]; then scripts/check-authorship.sh "$base..HEAD"; else scripts/check-authorship.sh --all; fi
+cargo fmt --all --check

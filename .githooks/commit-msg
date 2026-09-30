@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Reject commits not authored by Chaitanya Sistla or carrying co-author /
+# tool-attribution trailers. Enable once per clone:
+#   git config core.hooksPath .githooks
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+# The identity git will actually use (config, includes or GIT_AUTHOR_* env).
+ident=$(git var GIT_AUTHOR_IDENT)
+name=${ident%% <*}
+if [[ "$name" != "Chaitanya Sistla" ]]; then
+  echo "commit-msg: author would be '$name'; AgentACL commits are authored by Chaitanya Sistla only" >&2
+  exit 1
+fi
+exec "$root/scripts/check-authorship.sh" --message "$1"

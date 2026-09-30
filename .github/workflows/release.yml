@@ -1,0 +1,247 @@
+name: Release
+
+# Push a tag `vX.Y.Z` (or `vX.Y.Z-rc.N`) on main to publish. Run manually with
+# `dry_run` to rehearse everything except publishing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to rehearse (e.g. v0.2.0); must exist
+        required: true
+      dry_run:
+        description: Build and verify only, do not publish
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: macos-14
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TAG }}
+      - name: Tag is a semantic version
+        id: meta
+        run: |
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo "::error::tag '$TAG' is not vX.Y.Z[-alpha|beta|rc.N]"; exit 1; }
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Versions agree (tag, Cargo, console package)
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          base=${VERSION%%-*}
+          cargo_v=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml)
+          npm_v=$(sed -n 's/^  "version": "\(.*\)",/\1/p' crates/agentacl-cli/web/package.json)
+          echo "tag=$VERSION cargo=$cargo_v console=$npm_v"
+          [[ "$cargo_v" == "$VERSION" || "$cargo_v" == "$base" ]] || { echo "::error::Cargo.toml version $cargo_v != tag $VERSION"; exit 1; }
+          [[ "$npm_v" == "$cargo_v" ]] || { echo "::error::web/package.json version $npm_v != Cargo.toml $cargo_v"; exit 1; }
+          grep -q "name = \"agentacl-cli\"" Cargo.lock
+      - name: Tagged commit is on main
+        run: |
+          git fetch origin main --quiet
+          git merge-base --is-ancestor "$(git rev-parse "$TAG^{commit}")" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+      - name: Tag is annotated
+        run: |
+          [[ "$(git cat-file -t "$TAG")" == "tag" ]] || { echo "::error::use an annotated tag: git tag -a $TAG -m '...'"; exit 1; }
+      - name: Changelog has this release
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          grep -qE "^## \[$VERSION\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || { echo "::error::CHANGELOG.md needs '## [$VERSION] - YYYY-MM-DD'"; exit 1; }
+      - name: Every commit authored by Chaitanya Sistla
+        run: scripts/check-authorship.sh --all
+      - name: Tag signed by / created by the maintainer
+        run: |
+          tagger=$(git for-each-ref "refs/tags/$TAG" --format='%(taggername)')
+          [[ "$tagger" == "Chaitanya Sistla" ]] || { echo "::error::tag created by '$tagger'"; exit 1; }
+
+  checks:
+    name: Full CI
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [preflight, checks]
+    runs-on: macos-14
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build (locked, release)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '13.0'
+        run: cargo build --release --locked --target ${{ matrix.target }} -p agentacl-cli
+      - name: Check architecture and version
+        run: |
+          bin=target/${{ matrix.target }}/release/agentacl
+          file "$bin"
+          arch=${{ matrix.target }}; arch=${arch%%-*}; [[ $arch == aarch64 ]] && arch=arm64
+          lipo -archs "$bin" | grep -qx "$arch"
+          # rc tags ship the base version (Cargo has no pre-release suffix here).
+          if [[ $arch == arm64 ]]; then "$bin" --version | grep -q "$(echo "${TAG#v}" | cut -d- -f1)"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/agentacl
+          if-no-files-found: error
+
+  package:
+    name: Package, sign and verify
+    needs: [preflight, build]
+    runs-on: macos-14
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: bins
+      - name: Universal binary
+        run: |
+          mkdir -p out
+          lipo -create -output out/agentacl bins/bin-aarch64-apple-darwin/agentacl bins/bin-x86_64-apple-darwin/agentacl
+          cp bins/bin-aarch64-apple-darwin/agentacl out/agentacl-arm64
+          cp bins/bin-x86_64-apple-darwin/agentacl out/agentacl-x86_64
+          chmod +x out/agentacl*
+          lipo -archs out/agentacl | tr ' ' '\n' | sort | tr '\n' ' ' | grep -q "arm64 x86_64"
+      - name: Code sign and notarize (when signing secrets are configured)
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [[ -z "$CERT_P12" ]]; then
+            echo "::notice::No MACOS_CERT_P12 secret: binaries are published unsigned (ad-hoc). See docs/releasing.md."
+            for b in out/agentacl*; do codesign --force --sign - "$b"; done
+            exit 0
+          fi
+          kc="$RUNNER_TEMP/release.keychain-db"; kp=$(uuidgen)
+          security create-keychain -p "$kp" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kp" "$kc"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kp" "$kc"
+          security list-keychains -d user -s "$kc"
+          for b in out/agentacl*; do codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$b"; codesign --verify --strict --verbose=2 "$b"; done
+          if [[ -n "$NOTARY_APPLE_ID" ]]; then
+            ditto -c -k out "$RUNNER_TEMP/notarize.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --wait
+          fi
+      - name: Smoke test the packaged binary
+        run: |
+          bin=out/agentacl
+          "$bin" --version | tee /tmp/v.txt
+          grep -q "${TAG#v}" /tmp/v.txt || grep -q "$(echo "${TAG#v}" | cut -d- -f1)" /tmp/v.txt
+          "$bin" --help >/dev/null
+          "$bin" status >/dev/null
+          "$bin" discover >/dev/null
+          "$bin" policy check --path "$HOME/.ssh/id_ed25519" | grep -q DENY
+          "$bin" policy check --path "$HOME/.aws/credentials" | grep -q DENY
+          mkdir -p /tmp/proj && cd /tmp/proj && git init -q && "$GITHUB_WORKSPACE/$bin" run --dry-run -- /usr/bin/true >/dev/null
+      - name: Archives and checksums
+        run: |
+          v=${TAG#v}
+          for flavour in universal arm64 x86_64; do
+            d="agentacl-$v-macos-$flavour"; mkdir -p "dist/$d"
+            if [[ $flavour == universal ]]; then cp out/agentacl "dist/$d/agentacl"; else cp "out/agentacl-$flavour" "dist/$d/agentacl"; fi
+            cp README.md CHANGELOG.md "dist/$d/"
+            [[ -f LICENSE ]] && cp LICENSE "dist/$d/"
+            tar -C dist -czf "dist/$d.tar.gz" "$d"
+          done
+          (cd dist && shasum -a 256 ./*.tar.gz | sed 's# \./# #' > SHA256SUMS)
+          cat dist/SHA256SUMS
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+      - name: Build provenance attestation
+        if: ${{ !(inputs.dry_run) }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [preflight, package]
+    if: ${{ !(inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+      - name: Release notes from CHANGELOG
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on=1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [[ -s notes.md ]] || { echo "::error::empty release notes"; exit 1; }
+          {
+            echo
+            echo "### Install"
+            echo '```sh'
+            echo "curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/agentacl-${VERSION}-macos-universal.tar.gz"
+            echo "shasum -a 256 -c SHA256SUMS --ignore-missing"
+            echo "tar xzf agentacl-${VERSION}-macos-universal.tar.gz && sudo install -m 755 agentacl-${VERSION}-macos-universal/agentacl /usr/local/bin/"
+            echo '```'
+            echo "Verify provenance: \`gh attestation verify agentacl-${VERSION}-macos-universal.tar.gz -R ${GITHUB_REPOSITORY}\`"
+          } >> notes.md
+          cat notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: AgentACL ${{ env.TAG }}
+          body_path: notes.md
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

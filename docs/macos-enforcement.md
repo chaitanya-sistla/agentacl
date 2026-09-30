@@ -4,7 +4,7 @@ Status: design, iteration 1. Tested on macOS 26.5.1 (Apple Silicon).
 
 This document answers three questions:
 
-1. What can AgentFence **strongly enforce** in the MVP, without special
+1. What can AgentACL **strongly enforce** in the MVP, without special
    entitlements?
 2. What **requires Endpoint Security** (ES)?
 3. What is **observation only**?
@@ -27,18 +27,18 @@ pub trait EnforcementBackend {
 | Backend | Iteration 1 | Mechanism |
 |---|---|---|
 | `SeatbeltBackend` | **Implemented** | Kernel sandbox (Sandbox.kext, a MAC policy) applied via `sandbox-exec` to the agent and every descendant |
-| `MacOSEndpointSecurityBackend` | Stub: `capabilities()` returns none, and `status` reports "unavailable: requires com.apple.developer.endpoint-security.client" | ES system extension (Swift) linking `agentfence-policy` |
+| `MacOSEndpointSecurityBackend` | Stub: `capabilities()` returns none, and `status` reports "unavailable: requires com.apple.developer.endpoint-security.client" | ES system extension (Swift) linking `agentacl-policy` |
 | `OpenShellBackend`, `LinuxBackend` | Not started, and no code in iteration 1 | n/a |
 
 `status` and every event name the backend that produced the decision.
 
 ## 2. MVP mechanism: Seatbelt (`sandbox-exec`)
 
-`agentfence run` compiles the effective policy into an SBPL (Sandbox Profile
+`agentacl run` compiles the effective policy into an SBPL (Sandbox Profile
 Language) profile and launches the agent with `/usr/bin/sandbox-exec -f
 <profile> -- <agent>`. The sandbox is attached to the process **in the kernel**
 and is inherited by every child across `fork`/`exec`. It keeps working if the
-AgentFence supervisor dies. The same mechanism underlies the built-in
+AgentACL supervisor dies. The same mechanism underlies the built-in
 sandboxing in Claude Code and Codex on macOS.
 
 ### 2.1 What we verified on this machine
@@ -55,7 +55,7 @@ sandboxing in Claude Code and Codex on macOS.
 | `deny process-exec (literal "/usr/bin/sudo")` | EPERM, but the probe is confounded: **any** sandbox forbids exec of setuid/setgid binaries (`forbidden-exec-sugid`, even under `(allow default)`), so `sudo`, `su` and `ps` never run in a session **[verified]**. The exec-deny mechanism itself needs a non-setuid probe binary in the E2E suite |
 | `osascript -e 'do shell script "cat <denied>"'` | EPERM, because the child is sandboxed **[verified]** |
 | `deny appleevent-send`, then `osascript` → Finder | **Not blocked.** Apple Events escape is an open item (§5, T7) **[verified]** |
-| Nested `sandbox-exec` inside `sandbox-exec` | **Fails for any real outer profile** (`sandbox_apply: Operation not permitted`; with `(deny default)` the log shows `forbidden-sandbox-reinit`). It only works under a bare `(allow default)` **[verified]**. Consequence: agents that sandbox their own commands (Codex's default mode, Claude Code's sandbox setting) would have every shell command fail. Each provider must declare how to switch off the agent's inner sandbox when AgentFence is the outer one (flag, env or settings override), and an E2E test covers it **[to verify per agent]** |
+| Nested `sandbox-exec` inside `sandbox-exec` | **Fails for any real outer profile** (`sandbox_apply: Operation not permitted`; with `(deny default)` the log shows `forbidden-sandbox-reinit`). It only works under a bare `(allow default)` **[verified]**. Consequence: agents that sandbox their own commands (Codex's default mode, Claude Code's sandbox setting) would have every shell command fail. Each provider must declare how to switch off the agent's inner sandbox when AgentACL is the outer one (flag, env or settings override), and an E2E test covers it **[to verify per agent]** |
 | Hard link created **before** the session, then read inside it | **Readable: bypass** **[verified]**. Handled by the startup `st_nlink` check (threat model T2) |
 | Unix-socket connect deny `(remote unix-socket (path-literal …))` | Works, including via symlink/hard link to the socket **[verified]** |
 | `(with message "…")` on a deny, including `(deny default …)` | The message is appended to the kernel violation report; used for exact session/rule attribution **[verified]** |
@@ -77,7 +77,7 @@ sandboxing in Claude Code and Codex on macOS.
 ;; ---- all deny rules come LAST: in SBPL the last matching rule wins, and that is how explicit-deny-wins is realized
 (deny file-read* file-write* <deny_read/deny_write rules, with require-not for `except`>)
 (deny file-write-unlink <ancestor literals of anchored secret paths>)
-(deny file-write* <agentfence-self paths>)
+(deny file-write* <agentacl-self paths>)
 (deny process-exec <resolved binaries for executable-only process deny/ask rules>)
 (deny network-outbound (remote unix-socket (path-literal "<SSH_AUTH_SOCK>")))   ; verified syntax
 ;; network-bind / network-inbound: never allowed except loopback ports from network.listen
@@ -165,7 +165,7 @@ SBPL can filter by IP/port but not by hostname. So:
 2. The supervisor runs a CONNECT/HTTP proxy on that port, and the child gets
    `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`.
 3. The proxy evaluates `network.connect {host, port}`, then either connects or
-   answers `403` with an AgentFence reason header. Every decision is an
+   answers `403` with an AgentACL reason header. Every decision is an
    `decision=allow|deny, enforcement=enforced` event.
 
 A tool that ignores the proxy variables simply fails to connect, so the design
@@ -224,7 +224,7 @@ Until the entitlement is granted, `MacOSEndpointSecurityBackend` returns
 | argv-aware exec authorization (`git push`, `terraform apply`) | `AUTH_EXEC` (argv via `es_exec_arg`) | SBPL can't see argv |
 | Per-session filesystem decisions | `AUTH_OPEN`, `AUTH_READDIR`, `AUTH_READLINK`, `AUTH_CREATE`, `AUTH_RENAME`, `AUTH_UNLINK`, `AUTH_LINK`, `AUTH_TRUNCATE`, `AUTH_CLONE`, `AUTH_EXCHANGEDATA`, `AUTH_COPYFILE`, `AUTH_SETEXTATTR`, `AUTH_DELETEEXTATTR`, `AUTH_SETMODE`, `AUTH_SETOWNER`, `AUTH_SETFLAGS`, `AUTH_SETACL`, `AUTH_SETATTRLIST`, `AUTH_UTIMES` | Seatbelt already does these, but its profile is fixed at launch |
 | Unix-socket access (ssh-agent, docker.sock) | `AUTH_UIPC_CONNECT`, `AUTH_UIPC_BIND` | SBPL handles connect statically (verified); ES adds per-session decisions |
-| Unsupervised agents (started outside `agentfence run`) | All of the above, system-wide, matched by signing identity | Seatbelt applies only to what we launch |
+| Unsupervised agents (started outside `agentacl run`) | All of the above, system-wide, matched by signing identity | Seatbelt applies only to what we launch |
 | Agent signing identity for every exec | `es_process_t.{team_id, signing_id, cdhash, is_platform_binary}` | We call `codesign` APIs ourselves, which is racy |
 | Tamper protection (killing the supervisor, rewriting policy) | `AUTH_SIGNAL`, `AUTH_GET_TASK`, `AUTH_GET_TASK_READ`, `AUTH_PROC_SUSPEND_RESUME`, `AUTH_OPEN`/`AUTH_UNLINK` on our own files | Partial in SBPL |
 
@@ -238,7 +238,7 @@ separate entitlement and a separate project.
    deadlines gets its message defaulted, and it can be **terminated by the
    kernel**. So:
    - Policy evaluation happens **in-process** in the extension (the Rust
-     `agentfence-policy` staticlib), over a pre-compiled, pre-expanded policy.
+     `agentacl-policy` staticlib), over a pre-compiled, pre-expanded policy.
      There's no IPC to the CLI and no disk I/O.
    - The engine never waits on a human (policy-model §6: deny, record a pending
      approval, then grant and retry).
@@ -271,11 +271,11 @@ separate entitlement and a separate project.
 ### 3.4 Process layout with ES
 
 ```
-AgentFence.app (/Applications)
- └─ Contents/Library/SystemExtensions/ai.agentfence.es.systemextension   (Swift, root)
-       links libagentfence_policy.a  (Rust, C ABI: af_policy_load / af_policy_evaluate / af_policy_free)
+AgentACL.app (/Applications)
+ └─ Contents/Library/SystemExtensions/ai.agentacl.es.systemextension   (Swift, root)
+       links libagentacl_policy.a  (Rust, C ABI: af_policy_load / af_policy_evaluate / af_policy_free)
        ⇅ XPC (Mach service): policy snapshots in, decision events out
- agentfenced (Rust, per-user LaunchAgent) — session registry, SQLite audit, approvals; the CLI talks to it
+ agentacld (Rust, per-user LaunchAgent) — session registry, SQLite audit, approvals; the CLI talks to it
  (the ES extension is the only root component)
 ```
 
@@ -298,7 +298,7 @@ daemon is down. It holds the last policy snapshot it received.
 | Session/rule attribution of kernel denials | **Exact** (kernel-reported profile tags) | Exact | Independent of process polling |
 | Delegation chain in events | **Observed** (100 ms polling; intermediate hops of short-lived processes may show as `…`) | Exact | Enforcement never depends on it |
 | Agent identity of the launched binary | **Verified at launch** (path, SHA-256, code signature) | Continuous per exec | |
-| Agents **not** launched via `agentfence run` | **Observed only** (`discover`, `agents --all`) | Enforced | MVP can't restrict what it didn't launch |
+| Agents **not** launched via `agentacl run` | **Observed only** (`discover`, `agents --all`) | Enforced | MVP can't restrict what it didn't launch |
 | Escape via launchd / Apple Events / other apps | **Not enforced until probes pass** (Mach-service allowlist, T7) | Partial (`AUTH_EXEC` can refuse `osascript`/`open`/`launchctl` for agent-tree processes) | Open item |
 | Delayed execution via files the human later runs (`.git/**`, hooks, rc files, agent configs) | **Enforced** for the `exec-persistence` paths, **pending per-vector E2E probes**; **observed** (session-end diff) for build files | Same | T19 |
 | Read of protected file via a pre-existing hard link | **Fail-closed at startup** for concrete protected paths and files in `${PROJECT}`; **not covered** for glob matches elsewhere in `${HOME}` | Same | T2 |
@@ -309,9 +309,9 @@ daemon is down. It holds the last policy snapshot it received.
 - `enforcement=enforced` is set only by the kernel-report path (§2.3) or the proxy (§2.4).
 - The observation path (process-tree monitor) can only emit
   `enforcement=observed`. Its `deny`/`ask` decisions are rendered as
-  `AGENTFENCE OBSERVED — NOT BLOCKED`. This is enforced in code: the
+  `AGENTACL OBSERVED — NOT BLOCKED`. This is enforced in code: the
   `EventSink` constructor for observers can't set `enforced`.
-- `agentfence status` always prints the backend and the enforceability summary,
+- `agentacl status` always prints the backend and the enforceability summary,
   for example: `Enforced: filesystem, network, exec(binary)` and
   `Observed only: exec(arguments)`.
 - If the Seatbelt profile fails to compile or apply, the agent isn't started

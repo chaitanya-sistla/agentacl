@@ -3,11 +3,11 @@
 version = 4
 
 [[package]]
-name = "agentfence-cli"
+name = "agentacl-cli"
 version = "0.1.0"
 dependencies = [
- "agentfence-core",
- "agentfence-policy",
+ "agentacl-core",
+ "agentacl-policy",
  "anyhow",
  "clap",
  "hex",
@@ -19,10 +19,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentfence-core"
+name = "agentacl-core"
 version = "0.1.0"
 dependencies = [
- "agentfence-policy",
+ "agentacl-policy",
  "anyhow",
  "hex",
  "libc",
@@ -38,7 +38,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentfence-policy"
+name = "agentacl-policy"
 version = "0.1.0"
 dependencies = [
  "hex",

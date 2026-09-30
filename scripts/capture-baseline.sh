@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs a command under a Seatbelt profile and prints the unique kernel sandbox
 # denials it caused ("op path"), for refining the runtime baseline
-# (crates/agentfence-policy/builtin/runtime.yaml, crates/agentfence-core/src/enforce/baseline.rs).
+# (crates/agentacl-policy/builtin/runtime.yaml, crates/agentacl-core/src/enforce/baseline.rs).
 #
 # Usage: scripts/capture-baseline.sh PROFILE.sb CMD [ARGS...]
 #

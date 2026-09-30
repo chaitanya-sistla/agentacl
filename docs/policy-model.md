@@ -1,4 +1,4 @@
-# AgentFence Policy Model
+# AgentACL Policy Model
 
 Status: design, iteration 1. The format is `version: v1`, YAML.
 
@@ -150,13 +150,13 @@ Documents are loaded in this order and **merged**. Merging is a union of rules,
 never a replacement.
 
 1. **Built-in**, compiled into the binary as data
-   (`crates/agentfence-policy/builtin/*.yaml`):
+   (`crates/agentacl-policy/builtin/*.yaml`):
    `protect-secrets` (§5), `runtime` (§5.1), and `default`. `default` is the
    starter policy: filesystem, network and process defaults, plus project
    read/write allows. It applies **only when no user policy exists**.
-2. **User** `~/.config/agentfence/policy.yaml` (or `--policy FILE`). Its
+2. **User** `~/.config/agentacl/policy.yaml` (or `--policy FILE`). Its
    presence replaces `default`. It never replaces `protect-secrets` or `runtime`.
-3. **Project** `${PROJECT}/.agentfence/policy.yaml`.
+3. **Project** `${PROJECT}/.agentacl/policy.yaml`.
 
 Project policies live in the repository, so a cloned repo could ship one. A
 project policy is therefore **restrict-only**, with a **closed schema**. The only
@@ -171,15 +171,15 @@ keys it may contain are:
 **Any other key** is a load error. That includes every `allow*`,
 `network.listen`, `builtin`, and `trusted_project_policies`. The only way
 past this is for the user to trust the file's exact SHA-256 **for that
-project path**, with `agentfence policy trust --sha256 <sha> [--project P]`.
-This records `{project, sha256}` in `~/.config/agentfence/config.yaml`
+project path**, with `agentacl policy trust --sha256 <sha> [--project P]`.
+This records `{project, sha256}` in `~/.config/agentacl/config.yaml`
 (`trusted_project_policies`). Any change to the file invalidates the trust.
 The same bytes in another project are not trusted. Legacy hash-only entries
 are ignored.
 
 For the same reason, the sandbox profile denies the agent write access to
-`${PROJECT}/.agentfence/**`, all of `~/.config/agentfence/**` (user policy
-and trust config), and the AgentFence state dir.
+`${PROJECT}/.agentacl/**`, all of `~/.config/agentacl/**` (user policy
+and trust config), and the AgentACL state dir.
 
 `match:` selects which documents apply to a session. Built-ins always apply.
 
@@ -271,7 +271,7 @@ filesystem:
 ```
 
 A default deny is overridable by allow. An explicit deny is not.
-`agentfence policy check` warns when an explicit deny fully shadows an
+`agentacl policy check` warns when an explicit deny fully shadows an
 allow rule.
 
 ### 4.2 Subject conditions
@@ -302,7 +302,7 @@ Rules are data (YAML), grouped with an id and a reason per group. Sketch:
 | `gpg` | `${HOME}/.gnupg/**` |
 | `browsers` | `${HOME}/Library/Application Support/{Google/Chrome,BraveSoftware,Microsoft Edge,Arc,Firefox}/**`, `${HOME}/Library/Cookies/**`, `${HOME}/Library/Safari/**`, `${HOME}/Library/Containers/com.apple.Safari/**`: cookies, saved passwords and signed-in sessions |
 | `exec-persistence` | deny_write only. **Git:** `${PROJECT}/**/.git/**` (this covers `config`, `hooks`, `commondir`, `info/attributes` and `modules/*/config`), **except** git's data files: `objects/**`, `refs/**`, `logs/**`, `index`, `HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_*`, `COMMIT_EDITMSG`, `packed-refs`, `*.lock`, `rebase-merge/**`, `rebase-apply/**`, `sequencer/**`. Also denied: creating, unlinking or renaming `${PROJECT}/**/.git` itself, which blocks the gitfile swap. **Project agent configs:** `${PROJECT}/.claude/**`, `${PROJECT}/.mcp.json`, `${PROJECT}/.codex/**`, `${PROJECT}/.gemini/**`, `${PROJECT}/.vscode/**`, `${PROJECT}/.cursor/**`. **User:** `${HOME}/.gitconfig`, `${HOME}/.config/git/**`, shell rc files (`${HOME}/.zshrc`, `.zprofile`, `.zshenv`, `.bashrc`, `.bash_profile`, `.profile`), `${HOME}/Library/LaunchAgents/**`, plus provider-declared hook configs (e.g. `${HOME}/.claude/settings.json`) **and every script those configs reference**, which is parsed at session start. See threat model T19 |
-| `agentfence-self` | deny_write only: AgentFence state dir, user policy, `${PROJECT}/.agentfence/**` |
+| `agentacl-self` | deny_write only: AgentACL state dir, user policy, `${PROJECT}/.agentacl/**` |
 
 Git's writable set is an **allowlist** of data files, because git reads
 config-like indirections from more places than `config` alone (`commondir`
@@ -322,7 +322,7 @@ test fixtures. That is intentional: default-deny for sensitive material.
 Deny-wins means a user can't allow them back, but a user policy *can* shadow a
 whole built-in group with `builtin: { disable: ["keys"] }`. That setting is
 reported loudly by `policy check` and recorded in every session's identity.
-The `agentfence-self` and `exec-persistence` groups can't be disabled.
+The `agentacl-self` and `exec-persistence` groups can't be disabled.
 
 ### 5.1 Built-in `runtime` (default allows)
 
@@ -336,7 +336,7 @@ metadata reads on `/` and the `/var`, `/etc`, `/tmp` and `/opt` symlinks, plus
 `/private/var/select/**`, `/dev/dtracehelper`, and several Mach services. The real
 baseline is built empirically: run each supported agent under a logging
 profile, collect the kernel denials, and review them into `runtime.yaml`. An E2E
-test per agent (`agentfence run -- <agent> --version` and a scripted session)
+test per agent (`agentacl run -- <agent> --version` and a scripted session)
 keeps it from regressing.
 
 - metadata (`stat`, not contents): `/` and every ancestor of an allowed path
@@ -377,7 +377,7 @@ There's no interactive approval in iteration 1. `ask` is resolved like this:
 | Backend | Filesystem `ask` | Process `ask` |
 |---|---|---|
 | Seatbelt (MVP) | Compiled to **deny** (fail closed). Event: `decision=ask, enforcement=enforced, reason="approval required; interactive approval not available"` | Executable-only patterns (`"foo *"`, `"foo"`): compiled to exec **deny**. Argument patterns (`"git push *"`): **cannot** be compiled; evaluated on observed execs → `enforcement=observed` (the event says it was *not* stopped) |
-| Endpoint Security (later) | Kernel AUTH is answered **deny** within the deadline, and a pending approval is recorded. `agentfence approve <id>` grants a scoped, time-limited approval (session + exact resource/argv hash). The agent retries | Same as filesystem, keyed on the exact argv |
+| Endpoint Security (later) | Kernel AUTH is answered **deny** within the deadline, and a pending approval is recorded. `agentacl approve <id>` grants a scoped, time-limited approval (session + exact resource/argv hash). The agent retries | Same as filesystem, keyed on the exact argv |
 
 **Process defaults.** Under Seatbelt, `defaults.process: ask` can't be
 enforced, because blocking every exec that isn't listed would stop the agent's
@@ -391,11 +391,11 @@ deadline makes that unsafe (see macos-enforcement.md).
 
 ## 7. Enforceability classification
 
-`agentfence policy check` prints every effective rule with one of these:
+`agentacl policy check` prints every effective rule with one of these:
 
 | Class | Meaning |
 |---|---|
-| `enforced` | The active backend refuses matching operations in the kernel or at an AgentFence-owned choke point |
+| `enforced` | The active backend refuses matching operations in the kernel or at an AgentACL-owned choke point |
 | `enforced-coarse` | Enforced, but at coarser granularity than written (e.g. `terraform *` enforced as "no exec of the resolved terraform binary") |
 | `observed` | Evaluated on observed activity. Violations are logged with `enforcement=observed`, **not prevented** |
 | `requires-es` | Needs the Endpoint Security backend. Not evaluated at all under Seatbelt |

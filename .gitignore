@@ -1,3 +1,10 @@
 target/
 *.db
 .DS_Store
+
+# Per-project AgentACL rules (local; the old name too)
+.agentacl/
+.agentfence/
+
+# Console build cache
+crates/agentacl-cli/web/node_modules/

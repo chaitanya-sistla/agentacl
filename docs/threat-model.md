@@ -1,4 +1,4 @@
-# AgentFence Threat Model
+# AgentACL Threat Model
 
 Status: design, iteration 1 (MVP = Seatbelt backend + proxy). The ES column
 shows what changes with the Endpoint Security backend (macos-enforcement.md §3).
@@ -10,16 +10,16 @@ shows what changes with the Endpoint Security backend (macos-enforcement.md §3)
 | Credentials and secrets | `.env*`, `~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.kube/config`, Terraform credentials and state, git/npm/pypi/docker credentials, GPG keys |
 | Code and data outside the project | Other repos, `~/Documents`, and the rest of `$HOME` |
 | Credential-bearing channels | The ssh-agent socket, the Docker socket, keychain, cloud metadata endpoints |
-| AgentFence itself | Policy files, the SQLite audit log, the supervisor process, and sandbox profiles |
+| AgentACL itself | Policy files, the SQLite audit log, the supervisor process, and sandbox profiles |
 | Integrity of the audit trail | Events are complete enough to reconstruct what an agent tried and what was stopped |
 
 ## 2. Actors and trust
 
 | Actor | Trust |
 |---|---|
-| **Human user** (uid running `agentfence run`) | Trusted. They own the machine and write the user policy. AgentFence doesn't defend against the user |
-| **AI agent session** and all its descendants | **Untrusted.** Treat it as if it were prompt-injected: it may actively try to read secrets, exfiltrate data, disable AgentFence, or escape supervision. It runs as the **same uid** as the human |
-| Repository content (including `.agentfence/policy.yaml`) | Untrusted. Written by whoever authored the repo |
+| **Human user** (uid running `agentacl run`) | Trusted. They own the machine and write the user policy. AgentACL doesn't defend against the user |
+| **AI agent session** and all its descendants | **Untrusted.** Treat it as if it were prompt-injected: it may actively try to read secrets, exfiltrate data, disable AgentACL, or escape supervision. It runs as the **same uid** as the human |
+| Repository content (including `.agentacl/policy.yaml`) | Untrusted. Written by whoever authored the repo |
 | Other local software, macOS, the kernel | Trusted |
 | Root-level malware | Out of scope |
 
@@ -36,7 +36,7 @@ Status legend: **M** = mitigated in the MVP, **P** = partially mitigated,
 | T1 | Agent reads secret files directly | Seatbelt deny rules from `protect-secrets`, compiled last (deny wins) | M | M |
 | T2 | Path tricks: symlink, hard link, case variants, `/tmp` vs `/private/tmp`, `..`, rename-then-read | Kernel checks the resolved vnode path; patterns are canonicalized; matching is case-insensitive. Verified: symlink, case, and *creating* a hard link are denied. Rename-then-read is closed by the implied rename/unlink/link deny (policy-model §4). **Pre-existing hard links**: at startup the supervisor checks `st_nlink` on every concrete protected path and on every protected file found by walking `${PROJECT}`. If it finds `st_nlink > 1`, `run` **refuses to start** unless the user passes `--accept-hardlink <path>`, which is recorded in the session. Residual: glob-protected files elsewhere in `${HOME}` are not walked, and a link to one in `/private/tmp` would be readable | P | P |
 | T3 | Rename an ancestor directory to move a secret out from under a path rule | Compiler denies unlink/rename of ancestor literals of every anchored secret path. Verified necessary and effective | M | M |
-| T4 | Tampering with AgentFence: editing the policy, SQLite log or profile, or adding allows to the project policy | Sandbox denies writes to the state dir, user policy and `${PROJECT}/.agentfence/**`; project policy is restrict-only; the profile is read before exec | M | M |
+| T4 | Tampering with AgentACL: editing the policy, SQLite log or profile, or adding allows to the project policy | Sandbox denies writes to the state dir, user policy and `${PROJECT}/.agentacl/**`; project policy is restrict-only; the profile is read before exec | M | M |
 | T5 | Killing or ptracing the supervisor | The sandbox is kernel-attached and survives supervisor death, so **enforcement continues**; only auditing stops. SBPL `signal` targets parse (verified), but `(target self)`+`(target children)` also stops grandchildren from signalling the agent, which breaks job control (verified). Plan: the agent is the session leader on a supervisor-owned pty (architecture §5), with `(target pgrp)`. If that breaks real agents, signal protection is dropped and this row stays P. The supervisor is signed with hardened runtime and without `get-task-allow` | P | M (`AUTH_SIGNAL`, `AUTH_GET_TASK`, `AUTH_PROC_SUSPEND_RESUME`) |
 | T6 | Using credentials without reading them: ssh-agent (`SSH_AUTH_SOCK`), gpg-agent, `docker.sock` (≈ root-equivalent via bind mounts), keychain via `securityd` | `SSH_AUTH_SOCK`/`GPG_AGENT_INFO` removed from the env **and** a `(remote unix-socket (path-literal …))` deny on the sockets. The latter is verified to work, including through symlinks/hard links. Keychain: exec-denying `git-credential-osxkeychain` is **not** a boundary. The boundary is whether the Mach service `com.apple.SecurityServer` is in the allowlist. Agents that store their login in the keychain (Claude Code) need it, which leaves T9 | P | M (`AUTH_UIPC_CONNECT`, `AUTH_EXEC`) |
 | T7 | **Escape via launchd/XPC/Apple Events**: asking another, unsandboxed process to act (`osascript` → Terminal `do script`, `open -a`, `launchctl`, login items) | The main lever is the Mach-service allowlist under `(deny default)` (macos-enforcement §2.2). `launchservicesd`, `appleevents`, pasteboard, `mds`, and `nsurlsessiond` are excluded. Writes to LaunchAgents and shell rc files are denied (`exec-persistence` built-in). Verified: `deny appleevent-send` alone does **not** stop `osascript` → Finder. Each excluded service needs a probe in the E2E suite | **O** until the probes pass | P: `AUTH_EXEC` can deny the agent tree from exec'ing `osascript`/`open`/`launchctl`, but the resulting unsandboxed process is **not** re-linkable via `responsible_audit_token` (its responsible process is Terminal/launchd) |
@@ -45,8 +45,8 @@ Status legend: **M** = mitigated in the MVP, **P** = partially mitigated,
 | T9 | Exfiltration **through an allowed host** (e.g. a gist on `github.com`, or reading keychain items the agent already has access to) | None. Allowed means allowed. Keychain access goes through `securityd` over Mach, and the agent may need it for its own login | O (documented) | O (needs NE + TLS inspection; out of scope) |
 | T10 | Argument-level abuse (`git push --force`, `terraform destroy`) | Observed only; events are `enforcement=observed` (shown as NOT BLOCKED). Executable-level deny is enforced | P | M (`AUTH_EXEC` argv) |
 | T11 | Copying or renaming a denied binary (`cp …/terraform ./tf`) to dodge path-based exec deny | Not caught by path. Note: *setuid/setgid* binaries (`sudo`, `su`, `ps`, `login`) can't be exec'd under any Seatbelt profile at all (`forbidden-exec-sugid`, verified), so `sudo` is denied regardless of policy | P | M (matching by `signing_id`/`cdhash`) |
-| T12 | Agent runs outside `agentfence run` | `discover` / `agents --all` report it as **UNSUPERVISED** | O (observed) | M (system-wide ES, matched by signature) |
-| T13 | Spoofing agent identity (`AGENTFENCE_SESSION`, fake process name) | Session membership comes from the process tree, not the env; agent identity comes from path + hash + code signature, not the process name | M (for launch) | M |
+| T12 | Agent runs outside `agentacl run` | `discover` / `agents --all` report it as **UNSUPERVISED** | O (observed) | M (system-wide ES, matched by signature) |
+| T13 | Spoofing agent identity (`AGENTACL_SESSION`, fake process name) | Session membership comes from the process tree, not the env; agent identity comes from path + hash + code signature, not the process name | M (for launch) | M |
 | T14 | PID reuse, or short-lived processes, confusing attribution | Session and rule attribution comes from kernel-reported profile tags (`with message`), not pids. Only the delegation chain uses the pid-keyed `(pid, start_time)` tree | M | M |
 | T15 | Log-stream loss (rate limits, parse errors, supervisor dead) → incomplete audit | Documented lower bound; `backend_warning` events; enforcement unaffected | P | M |
 | T15a | **Forged denial events**: any process can `os_log` a line that looks like `Sandbox: cat(…) deny(1) …` (verified with a dylib named `Sandbox`) | The log predicate requires `processIdentifier == 0` (kernel) as well as `sender == "Sandbox"`. Worst case for a forger is a fake *deny* in the log, never a fake allow | M | M |
@@ -64,12 +64,12 @@ Status legend: **M** = mitigated in the MVP, **P** = partially mitigated,
 ## 4. Out of scope (iteration 1)
 
 - Root or kernel compromise, SIP-disabled machines, physical access.
-- Attacks by the human user on AgentFence.
+- Attacks by the human user on AgentACL.
 - Confidentiality of data the policy explicitly allows the agent to read, and
   exfiltration via allowed destinations (T9).
-- Prompt-injection detection. AgentFence constrains **capability**, not intent,
+- Prompt-injection detection. AgentACL constrains **capability**, not intent,
   and no decision uses an LLM.
-- GUI agents (Cursor app, IDE-embedded agents) launched outside `agentfence run`.
+- GUI agents (Cursor app, IDE-embedded agents) launched outside `agentacl run`.
   They're discoverable, but not supervised in the MVP.
 
 ## 5. Security invariants (tested)
@@ -80,7 +80,7 @@ Status legend: **M** = mitigated in the MVP, **P** = partially mitigated,
    generation, or `sandbox-exec` fails.
 4. No event with `enforcement=enforced` is produced except from a kernel sandbox
    report (pid 0, sender `Sandbox`) or a proxy decision.
-5. The built-in `protect-secrets`, `exec-persistence` and `agentfence-self` rules are present in
-   every compiled profile unless `builtin.disable` names the group; `agentfence-self` and
+5. The built-in `protect-secrets`, `exec-persistence` and `agentacl-self` rules are present in
+   every compiled profile unless `builtin.disable` names the group; `agentacl-self` and
    `exec-persistence` can't be disabled.
 6. No generated profile contains an allow for an item on the never-allow list (policy-model §5.1).

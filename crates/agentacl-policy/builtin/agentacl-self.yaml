@@ -1,0 +1,10 @@
+# AgentACL's own policy, trust configuration and audit log (threat model T4).
+# Cannot be disabled.
+version: v1
+name: agentacl-self
+
+filesystem:
+  deny_write:
+    - { path: "${AGENTACL_STATE}/**", id: agentacl-self, reason: "AgentACL state and audit log are protected" }
+    - { path: "${AGENTACL_CONFIG}/**", id: agentacl-self, reason: "AgentACL policy and trust configuration are protected" }
+    - { path: "${PROJECT}/.agentacl/**", id: agentacl-self, reason: "Project AgentACL policy is protected" }

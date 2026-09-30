@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  authorship:
+    name: Authorship (Chaitanya Sistla only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commits
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT" == "pull_request" ]]; then
+            scripts/check-authorship.sh "$BASE..$HEAD"
+          elif [[ "$EVENT" == "push" && -n "$BEFORE" && "$BEFORE" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            scripts/check-authorship.sh "$BEFORE..$GITHUB_SHA"
+          else
+            scripts/check-authorship.sh --all
+          fi
+
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No leftover old product name
+        run: |
+          if git grep -nIi 'agentfence' -- . ':!.gitignore' ':!CHANGELOG.md' ':!scripts/check.sh' ':!.github/workflows/ci.yml'; then
+            echo "::error::found 'agentfence'; the product is AgentACL"; exit 1
+          fi
+      - name: No project policy or local state committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.agent(acl|fence)/|\.db$|\.bak$'; then
+            echo "::error::local policy/state files are tracked"; exit 1
+          fi
+      - name: Changelog has an Unreleased section
+        run: grep -q '^## \[Unreleased\]' CHANGELOG.md
+      - name: Shell scripts
+        run: |
+          sudo apt-get install -y shellcheck >/dev/null
+          shellcheck scripts/*.sh .githooks/*
+      - name: Workflow lint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Docs (warnings are errors)
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Unit and integration tests
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Build release binary
+        run: cargo build --release --locked -p agentacl-cli
+      - name: Smoke test
+        run: |
+          bin=target/release/agentacl
+          "$bin" --version
+          "$bin" status
+          "$bin" discover
+          "$bin" policy check
+          "$bin" policy check --path "$HOME/.ssh/id_ed25519" | tee /tmp/check.txt
+          grep -q 'DENY' /tmp/check.txt
+
+  x86_64:
+    name: Build for Intel Macs
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release --target x86_64-apple-darwin -p agentacl-cli
+      - run: file target/x86_64-apple-darwin/release/agentacl | grep -q x86_64
+
+  msrv:
+    name: Minimum supported Rust
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read rust-version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  console:
+    name: Console (React)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/agentacl-cli/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/agentacl-cli/web/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Committed build is current
+        run: |
+          git diff --exit-code --stat -- ../src/ui/dist || {
+            echo "::error::src/ui/dist does not match the console source; run 'npm run build' in crates/agentacl-cli/web and commit"; exit 1; }
+      - name: No remote resources in the bundle (CSP is 'self' only)
+        run: |
+          if grep -Eo 'https?://[a-zA-Z0-9.-]+' ../src/ui/dist/assets/app.js | grep -vE 'www\.w3\.org|react\.dev|reactjs\.org|github\.com/(facebook|radix-ui)' | sort -u | grep .; then
+            echo "::warning::the bundle mentions external URLs (reviewed above)"; fi
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+  dependencies:
+    name: Dependency policy (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  all-green:
+    name: All checks passed
+    if: always()
+    needs: [authorship, hygiene, rust, x86_64, msrv, console, dependencies]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -e 'to_entries | all(.value.result == "success")' >/dev/null || {
+            echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'; exit 1; }

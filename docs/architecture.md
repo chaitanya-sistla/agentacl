@@ -1,10 +1,10 @@
-# AgentFence Architecture
+# AgentACL Architecture
 
 Status: design, iteration 1 (pre-implementation). Platform: macOS only.
 
-AgentFence gives AI coding agents their own identity, and it authorizes what they
+AgentACL gives AI coding agents their own identity, and it authorizes what they
 do on a developer machine. This document covers the component boundaries, the
-language choice, the data flow of `agentfence run`, and the repository layout.
+language choice, the data flow of `agentacl run`, and the repository layout.
 Companion documents:
 
 - [threat-model.md](threat-model.md): what we defend against and what we don't
@@ -23,14 +23,14 @@ Companion documents:
 4. **Honest enforcement.** Every event carries a `decision` (`allow` / `deny` /
    `ask`) and an `enforcement` (`enforced` / `observed`). `enforced` is set only
    when a kernel mechanism (Seatbelt today, Endpoint Security later) or an
-   AgentFence-owned choke point (the network proxy) actually made that decision
+   AgentACL-owned choke point (the network proxy) actually made that decision
    take effect. A `deny` + `observed` event is rendered as **OBSERVED — NOT
    BLOCKED**. The CLI must never overstate what it did.
-5. **Fail closed for sensitive resources.** If AgentFence can't build a sandbox
+5. **Fail closed for sensitive resources.** If AgentACL can't build a sandbox
    profile, can't resolve `${PROJECT}`, or can't load the built-in secret
-   policy, `agentfence run` refuses to start the agent. It never starts the agent unconfined.
+   policy, `agentacl run` refuses to start the agent. It never starts the agent unconfined.
 6. **Local-first.** No servers, no accounts, no Docker. State lives under
-   `~/Library/Application Support/AgentFence/`.
+   `~/Library/Application Support/AgentACL/`.
 
 ## 2. Language decision
 
@@ -57,7 +57,7 @@ AUTH decisions in-process, because a user-space IPC round trip per `open(2)` is
 too slow and fragile under ES deadlines. If the core were Go, we'd either embed
 a Go runtime in the system extension or reimplement the evaluator in Swift. The
 second option gives us two evaluators that will drift apart, and in an
-authorization system drift is a vulnerability. With Rust, the `agentfence-policy`
+authorization system drift is a vulnerability. With Rust, the `agentacl-policy`
 crate compiles into the CLI and, unchanged, into a `staticlib` that the Swift
 extension links.
 
@@ -79,7 +79,7 @@ weaker CLI and library ecosystem.
 
 ```
                         ┌───────────────────────────────────────────────┐
-  agentfence CLI ──────▶│ agentfence-core                               │
+  agentacl CLI ──────▶│ agentacl-core                               │
   (clap)                │  config   paths, policy file discovery        │
                         │  agents   AgentProvider registry + providers  │
                         │  proc     libproc/sysctl, codesign, proc tree │
@@ -94,17 +94,17 @@ weaker CLI and library ecosystem.
                         └──────────────┬────────────────────────────────┘
                                        │ uses
                         ┌──────────────▼────────────────────────────────┐
-                        │ agentfence-policy (no I/O, no macOS deps)      │
+                        │ agentacl-policy (no I/O, no macOS deps)      │
                         │  parse YAML → Policy → compile → evaluate      │
                         │  PolicyEngine trait (native now, OPA later)    │
                         │  built-ins: protect-secrets, runtime, default  │
                         └───────────────────────────────────────────────┘
-        later:  macos/AgentFenceES (Swift system extension) ──links──▶ agentfence-policy (staticlib + C ABI)
+        later:  macos/AgentACLES (Swift system extension) ──links──▶ agentacl-policy (staticlib + C ABI)
 ```
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `config` | Resolves state dir, policy search path (built-in → `~/.config/agentfence/policy.yaml` → `<project>/.agentfence/policy.yaml`), and CLI flags | none |
+| `config` | Resolves state dir, policy search path (built-in → `~/.config/agentacl/policy.yaml` → `<project>/.agentacl/policy.yaml`), and CLI flags | none |
 | `agents` | `AgentProvider` trait and one provider per agent; `discover()` over installed binaries and running processes | `proc` |
 | `proc` | macOS process facts: pid list, ppid, executable path (`proc_pidpath`), argv (`KERN_PROCARGS2`), start time, code-signing identity (team ID, signing ID, cdhash) and SHA-256 | libc, Security.framework |
 | `identity` | Plain data types: `Human`, `Machine`, `AgentIdentity`, `DelegationChain` | none |
@@ -146,13 +146,13 @@ pub trait EnforcementBackend {
 }
 ```
 
-`Capabilities` lets `agentfence policy check` report, for each rule, whether the
+`Capabilities` lets `agentacl policy check` report, for each rule, whether the
 active backend **enforces** it, **observes** it, or **can't see** it. That's
 how the product stays honest by construction instead of by convention.
 
 ### 3.2 Adding a new agent
 
-1. Create `crates/agentfence-core/src/agents/<name>.rs` implementing `AgentProvider`.
+1. Create `crates/agentacl-core/src/agents/<name>.rs` implementing `AgentProvider`.
 2. Register it in `agents/mod.rs` (a single `vec![...]`).
 3. Add fixture-based tests (`ProcessFacts` samples) under `tests/fixtures/agents/`.
 
@@ -179,7 +179,7 @@ at the top of each provider file.
 }
 ```
 
-- **Human**: the uid/username of the process that invoked `agentfence run`. MVP
+- **Human**: the uid/username of the process that invoked `agentacl run`. MVP
   trusts the local account and does no further authentication (see threat model).
 - **Machine**: a hash of `IOPlatformUUID`. The raw hardware UUID is never stored.
 - **Agent**: identified by the provider. Code-signature identity (Team ID +
@@ -191,8 +191,8 @@ at the top of each provider file.
 - **Project**: the git worktree root of the working directory, else the working
   directory itself. It can be overridden with `--project`. `/`, `$HOME`, and
   **any ancestor of `$HOME`** (e.g. `/Users`) are refused as projects.
-- **Session**: `agt_` + a ULID, created by `agentfence run`. It's exported to the
-  child as `AGENTFENCE_SESSION` for correlation only. It is **not** an
+- **Session**: `agt_` + a ULID, created by `agentacl run`. It's exported to the
+  child as `AGENTACL_SESSION` for correlation only. It is **not** an
   authorization input, because the agent could forge it.
 
 ### 4.1 Delegation chain
@@ -212,12 +212,12 @@ without polling: every message carries the acting `es_process_t`, with
 notifications are asynchronous, so membership is decided per message
 (macos-enforcement §3.3).
 
-## 5. `agentfence run` data flow (MVP)
+## 5. `agentacl run` data flow (MVP)
 
 ```
-agentfence run [--project P] [--policy F] [--dry-run] -- claude [args…]
+agentacl run [--project P] [--policy F] [--dry-run] -- claude [args…]
  1. resolve argv[0] on PATH → realpath; provider match → AgentIdentity   (no provider match ⇒ agent id "custom:<basename>", or --agent-id; still fully supervised)
- 2. load policies: built-ins (protect-secrets, exec-persistence, agentfence-self, runtime; default if no user policy)
+ 2. load policies: built-ins (protect-secrets, exec-persistence, agentacl-self, runtime; default if no user policy)
     + user + project (closed schema); expand variables; validate  (any error ⇒ refuse to start)
  3. create Session and its private TMPDIR, persist `session_start` event;
     st_nlink check on protected files (T2: refuse to start on a hit unless --accept-hardlink);
@@ -239,8 +239,8 @@ agentfence run [--project P] [--policy F] [--dry-run] -- claude [args…]
 **Where denials are shown.** The agent owns the terminal (for example, Claude
 Code's TUI), so writing a box into its TTY would corrupt the screen. Instead:
 
-- Every decision lands in SQLite immediately, and `agentfence events --follow`
-  in another pane shows the `AGENTFENCE DENIED` card live.
+- Every decision lands in SQLite immediately, and `agentacl events --follow`
+  in another pane shows the `AGENTACL DENIED` card live.
 - When the session ends, `run` prints a summary with counts, the top denied
   resources, and any observed-but-not-blocked policy violations.
 
@@ -250,7 +250,7 @@ characters in attacker-influenced fields such as paths and argv (threat model T1
 
 **No daemon in the MVP.** Each `run` process supervises its own session, and
 `status`/`agents` read the shared SQLite store and check pid liveness. A
-long-lived `agentfenced` (a per-user LaunchAgent, in Rust) and the root ES system extension come
+long-lived `agentacld` (a per-user LaunchAgent, in Rust) and the root ES system extension come
 with Endpoint Security, when there is system-wide state to own. Adding one now
 would be infrastructure without a job.
 
@@ -258,29 +258,29 @@ would be infrastructure without a job.
 
 | Command | MVP behavior |
 |---|---|
-| `agentfence discover` | Installed agents (known install paths + PATH + app bundles) and running agent processes, each with evidence: path, signer, version, hash, whether it's supervised |
-| `agentfence agents` | Active **supervised** sessions: agent, pid, project, policy. `--all` also lists unsupervised running agents, flagged `UNSUPERVISED` |
-| `agentfence status` | Backend in use and its capabilities, ES availability, active sessions and their effective policy |
-| `agentfence policy check [--agent A] [--project P]` | Validates and merges policies, prints every effective rule with its enforceability (`enforced` / `enforced-coarse` / `observed` / `requires-es`, policy-model §7), plus the Mach-service allowlist and provider runtime grants. `--path X --action read` evaluates a single request and prints the decision trace |
-| `agentfence events [--session S] [--decision deny] [--follow] [--json]` | Audit log. `--json` emits NDJSON, one event per line |
-| `agentfence ui` | Local policy UI on 127.0.0.1 ([ui.md](ui.md)) |
-| `agentfence policy trust --sha256 <sha> [--project P]` | Trust a project policy's exact bytes, bound to that project path |
-| `agentfence restart [session]` | Relaunches a running session under the current policy. The supervisor gets SIGUSR1, stops the agent (SIGTERM, then SIGKILL after 5 s), reloads policy, and relaunches with the provider's resume args (`claude --continue`). Each launch is a new session with its own id. Needed because a Seatbelt profile can't change after launch |
-| `agentfence run [opts] -- <cmd…>` | Supervised launch as in §5. `--dry-run` prints the identity, the compiled profile and the enforceability report without launching. `--keep-env NAME` passes a secret-looking env var through (T21). `--accept-hardlink PATH` acknowledges a hard link to a protected file (T2) |
+| `agentacl discover` | Installed agents (known install paths + PATH + app bundles) and running agent processes, each with evidence: path, signer, version, hash, whether it's supervised |
+| `agentacl agents` | Active **supervised** sessions: agent, pid, project, policy. `--all` also lists unsupervised running agents, flagged `UNSUPERVISED` |
+| `agentacl status` | Backend in use and its capabilities, ES availability, active sessions and their effective policy |
+| `agentacl policy check [--agent A] [--project P]` | Validates and merges policies, prints every effective rule with its enforceability (`enforced` / `enforced-coarse` / `observed` / `requires-es`, policy-model §7), plus the Mach-service allowlist and provider runtime grants. `--path X --action read` evaluates a single request and prints the decision trace |
+| `agentacl events [--session S] [--decision deny] [--follow] [--json]` | Audit log. `--json` emits NDJSON, one event per line |
+| `agentacl ui` | Local policy UI on 127.0.0.1 ([ui.md](ui.md)) |
+| `agentacl policy trust --sha256 <sha> [--project P]` | Trust a project policy's exact bytes, bound to that project path |
+| `agentacl restart [session]` | Relaunches a running session under the current policy. The supervisor gets SIGUSR1, stops the agent (SIGTERM, then SIGKILL after 5 s), reloads policy, and relaunches with the provider's resume args (`claude --continue`). Each launch is a new session with its own id. Needed because a Seatbelt profile can't change after launch |
+| `agentacl run [opts] -- <cmd…>` | Supervised launch as in §5. `--dry-run` prints the identity, the compiled profile and the enforceability report without launching. `--keep-env NAME` passes a secret-looking env var through (T21). `--accept-hardlink PATH` acknowledges a hard link to a protected file (T2) |
 
 ## 7. Repository layout
 
 ```
-AgentFence/
+AgentACL/
 ├── Cargo.toml                    # workspace
 ├── crates/
-│   ├── agentfence-policy/        # pure: model, parse, expand, glob, evaluate, enforceability
+│   ├── agentacl-policy/        # pure: model, parse, expand, glob, evaluate, enforceability
 │   │   ├── src/{lib,model,parse,expand,glob,eval,enforceability}.rs
 │   │   ├── builtin/protect-secrets.yaml   # data-driven secret rules (include_str!)
 │   │   ├── builtin/runtime.yaml           # OS runtime baseline allows
 │   │   ├── builtin/default.yaml           # starter policy, used when no user policy exists
 │   │   └── tests/
-│   ├── agentfence-core/
+│   ├── agentacl-core/
 │   │   └── src/
 │   │       ├── config.rs  identity.rs  session.rs  supervisor.rs
 │   │       ├── proc/{mod,macos,tree,codesign}.rs
@@ -288,20 +288,20 @@ AgentFence/
 │   │       ├── enforce/{mod,seatbelt,endpoint_security}.rs
 │   │       ├── netproxy.rs
 │   │       └── audit/{mod,event,store}.rs
-│   └── agentfence-cli/           # bin "agentfence": clap + rendering only
+│   └── agentacl-cli/           # bin "agentacl": clap + rendering only
 │       └── src/{main,render}.rs
 ├── macos/                        # LATER: Xcode project for the ES system extension (not in iteration 1)
 ├── docs/{architecture,threat-model,policy-model,macos-enforcement}.md
 └── tests/e2e/                    # macOS-only integration tests that exercise sandbox-exec for real
 ```
 
-Three crates is the minimum that serves a real boundary. `agentfence-policy`
+Three crates is the minimum that serves a real boundary. `agentacl-policy`
 must stay I/O-free so it can be linked into the ES extension. The CLI stays
 thin so the core is testable without a terminal.
 
 ## 8. Storage
 
-`~/Library/Application Support/AgentFence/agentfence.db` (SQLite, WAL mode):
+`~/Library/Application Support/AgentACL/agentacl.db` (SQLite, WAL mode):
 
 Event shape (the `--json` output; one object per line):
 
@@ -347,11 +347,11 @@ access to it, because `sandbox-exec` reads the profile before exec.
 - **Agents:** fixture `ProcessFacts` for each agent, including negative fixtures
   (for example, ChatGPT.app's Codex *helper* processes must not match as agents).
 - **Audit:** store round-trip; `--json` schema snapshot.
-- **E2E:** `agentfence run -- /bin/sh -c 'cat $PROJECT/.env'` exits nonzero with
+- **E2E:** `agentacl run -- /bin/sh -c 'cat $PROJECT/.env'` exits nonzero with
   one `deny`/`enforced` event, and `cat $PROJECT/README` succeeds.
 
 ## 10. Out of scope for iteration 1
 
-The ES extension implementation, NetworkExtension, a hosted/remote UI (the local `agentfence ui` is specified in [ui.md](ui.md)), SaaS or remote
+The ES extension implementation, NetworkExtension, a hosted/remote UI (the local `agentacl ui` is specified in [ui.md](ui.md)), SaaS or remote
 policy distribution, authentication servers, Linux, OpenShell, OPA, interactive
 approval (see policy model §6), and TLS interception.
