@@ -124,7 +124,7 @@ Reason:    SSH keys and configuration are protected
 | `env-files` | `.env`, `.env.*` (except `.env.example` and similar), `.envrc`, anywhere |
 | `ssh` | `~/.ssh/**` |
 | `aws`, `gcp`, `azure` | `~/.aws/credentials`, SSO and CLI caches, `~/.config/gcloud/**`, `~/.azure/**` |
-| `kube` | `~/.kube/config` |
+| `kube` | `~/.kube` |
 | `terraform` | `*.tfstate`, `terraform.tfvars`, `~/.terraform.d/credentials.tfrc.json` |
 | `git-creds`, `package-creds` | `~/.git-credentials`, `gh` tokens, `.npmrc`, `.pypirc`, `.netrc`, docker and cargo credentials |
 | `keys`, `gpg` | `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `~/.gnupg/**` |

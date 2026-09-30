@@ -183,6 +183,12 @@ fn sandbox_reads() {
         assert_ne!(c, 0, "{cmd}: {o}");
         secret_free(&o);
     }
+    // The default policy: the project is writable, the rest of home is not.
+    let (c, o) = f.run(&p, "echo x > notes.txt && cat notes.txt");
+    assert_eq!((c, o.as_str()), (0, "x\n"), "project stays writable");
+    let (c, o) = f.run(&p, "echo x > $H/outside.txt");
+    assert_ne!(c, 0, "write outside the project succeeded: {o}");
+    assert!(!f.home.join("outside.txt").exists());
     // case variant and symlink
     let (c, o) = f.run(&p, "cat .ENV");
     assert_ne!(c, 0, "{o}");
@@ -190,6 +196,102 @@ fn sandbox_reads() {
     let (c, o) = f.run(&p, "cat link");
     assert_ne!(c, 0);
     secret_free(&o);
+}
+
+/// One fake file per built-in secret group (and several paths per group):
+/// every one must be unreadable and unwritable, and stay unchanged.
+#[test]
+fn sandbox_every_builtin_secret_group() {
+    let f = Fixture::new();
+    // (group, path relative to $H or $P); all contents are fake canaries.
+    let files: &[(&str, &str)] = &[
+        ("env-files", "$P/.env"),
+        ("env-files", "$P/sub/.env.local"),
+        ("env-files", "$P/.envrc"),
+        ("ssh", "$H/.ssh/id_ed25519"),
+        ("ssh", "$H/.ssh/config"),
+        ("aws", "$H/.aws/credentials"),
+        ("aws", "$H/.aws/sso/cache/token.json"),
+        ("gcp", "$H/.config/gcloud/credentials.db"),
+        ("azure", "$H/.azure/msal_token_cache.json"),
+        ("kube", "$H/.kube/config"),
+        ("kube", "$H/.kube/clusters/prod/config"),
+        ("terraform", "$H/.terraform.d/credentials.tfrc.json"),
+        ("terraform", "$P/infra/terraform.tfstate"),
+        ("terraform", "$P/infra/terraform.tfvars"),
+        ("git-creds", "$H/.git-credentials"),
+        ("git-creds", "$H/.config/gh/hosts.yml"),
+        ("package-creds", "$H/.npmrc"),
+        ("package-creds", "$H/.pypirc"),
+        ("package-creds", "$H/.netrc"),
+        ("package-creds", "$H/.docker/config.json"),
+        ("package-creds", "$H/.cargo/credentials.toml"),
+        ("keys", "$P/certs/server.pem"),
+        ("keys", "$P/deploy/id_rsa"),
+        ("gpg", "$H/.gnupg/private-keys-v1.d/key.key"),
+        ("browsers", "$H/Library/Application Support/Google/Chrome/Default/Cookies"),
+        ("browsers", "$H/Library/Cookies/Cookies.binarycookies"),
+        ("browsers", "$H/Library/Safari/History.db"),
+    ];
+    let real = |p: &str| PathBuf::from(p.replace("$H", &f.home.to_string_lossy()).replace("$P", &f.project.to_string_lossy()));
+    for (group, p) in files {
+        let path = real(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{group}-canary\n")).unwrap();
+    }
+    // Everything in home and the project is readable and writable, so only
+    // the built-in secret rules can be what blocks these (not the default).
+    let permissive = "version: v1\ndefaults: {filesystem: deny}\nfilesystem:\n  allow_read: [\"${HOME}/**\", \"${PROJECT}/**\"]\n  allow_write: [\"${HOME}/**\", \"${PROJECT}/**\"]\n";
+    let prof = f.profile(&f.policy(Some(permissive)), input());
+    let (c, o) = f.run(&prof, "echo ok > \"$H/notes.txt\" && cat \"$H/notes.txt\" && cat README");
+    assert_eq!((c, o.as_str()), (0, "ok\nhello readme\n"), "positive control: home and project are open");
+    for (group, p) in files {
+        let (c, o) = f.run(&prof, &format!("cat \"{p}\""));
+        assert_ne!(c, 0, "{group}: read of {p} succeeded: {o}");
+        assert!(!o.contains("canary"), "{group}: {p} leaked: {o}");
+        let (c, o) = f.run(&prof, &format!("printf pwned >> \"{p}\""));
+        assert_ne!(c, 0, "{group}: write to {p} succeeded: {o}");
+        let (c, o) = f.run(&prof, &format!("rm -f \"{p}\""));
+        assert!(c != 0 || real(p).exists(), "{group}: delete of {p} succeeded: {o}");
+        assert_eq!(std::fs::read_to_string(real(p)).unwrap(), format!("{group}-canary\n"), "{group}: {p} changed");
+    }
+    // AgentACL's own state (audit log of every session) is unreadable, even
+    // under a policy that opens all of home.
+    std::fs::write(f.state.join("agentacl.db"), "audit-canary\n").unwrap();
+    let (c, o) = f.run(&prof, "cat \"$H/Library/Application Support/AgentACL/agentacl.db\"");
+    assert!(c != 0 && !o.contains("canary"), "state dir readable: {o}");
+    // Every group is covered.
+    let mut groups: Vec<&str> = files.iter().map(|(g, _)| *g).collect();
+    groups.dedup();
+    let mut want = agentacl_policy::set::protect_secrets_groups();
+    want.dedup();
+    for g in want {
+        assert!(groups.contains(&g.as_str()), "no probe for built-in group {g}");
+    }
+}
+
+/// The boundary holds through interpreters and nested delegation:
+/// sh -> bash -> python3 -> file, and python3 -> subprocess -> file.
+#[test]
+fn sandbox_holds_through_python_and_nested_shells() {
+    let f = Fixture::new();
+    let prof = f.profile(&f.policy(None), input());
+    let py = "/usr/bin/python3";
+    // Positive control: Python runs in the sandbox and reads project files.
+    let (c, o) = f.run(&prof, &format!("{py} -c \"print(open('README').read(), end='')\""));
+    assert_eq!((c, o.as_str()), (0, "hello readme\n"), "positive control: python works in the sandbox");
+    // A tiny reader, so the nested chains below need no nested quoting.
+    std::fs::write(f.project.join("read.py"), "import sys\nprint(open(sys.argv[1]).read())\n").unwrap();
+    for script in [
+        format!("{py} read.py $H/.aws/credentials"),
+        format!("/bin/bash -c '/bin/sh -c \"{py} read.py .env\"'"),
+        format!("{py} -c \"import subprocess; print(subprocess.run(['/bin/cat', '$H/.ssh/id_ed25519'], capture_output=True, text=True))\""),
+        format!("{py} -c \"import os; os.system('/bin/sh -c \\\"/bin/cat $H/.aws/credentials\\\"')\""),
+    ] {
+        let (_, o) = f.run(&prof, &script);
+        assert!(!o.contains("canary"), "secret leaked via: {script}\n{o}");
+        assert!(o.contains("Operation not permitted") || o.contains("PermissionError"), "expected a kernel denial via: {script}\n{o}");
+    }
 }
 
 #[test]
@@ -216,6 +318,32 @@ fn sandbox_location_protection() {
     assert!(f.project.join("README").exists());
 }
 
+/// A glob rule (`**/*.pem`) protects by name, so moving the directory that
+/// holds a match to another writable place (the temp dirs) must not unprotect
+/// it: the names are denied there too.
+#[test]
+fn sandbox_moved_directory_keeps_secret_names() {
+    let f = Fixture::new();
+    for (dir, file, text) in [("certs", "server.pem", "pem-canary"), ("infra", "terraform.tfvars", "tfvars-canary"), ("docs", "notes.txt", "notes-ok")] {
+        std::fs::create_dir_all(f.project.join(dir)).unwrap();
+        std::fs::write(f.project.join(dir).join(file), text).unwrap();
+    }
+    let shared = PathBuf::from(format!("/private/tmp/agentacl-test-{}", ulid::Ulid::new()));
+    let p = f.profile(&f.policy(None), input());
+    let (c, o) = f.run(&p, "mv docs $TMPDIR/d && cat $TMPDIR/d/notes.txt");
+    assert_eq!((c, o.as_str()), (0, "notes-ok"), "positive control: moving an ordinary directory works");
+    for script in [
+        "mv certs $TMPDIR/c; cat $TMPDIR/c/server.pem".to_string(),
+        "mv $TMPDIR/c/server.pem $TMPDIR/c/x.txt; cat $TMPDIR/c/x.txt".to_string(),
+        format!("mv infra {}; cat {}/terraform.tfvars", shared.display(), shared.display()),
+    ] {
+        let (_, o) = f.run(&p, &script);
+        assert!(!o.contains("canary"), "{script}: {o}");
+        assert!(o.contains("Operation not permitted") || o.contains("No such file"), "{script}: {o}");
+    }
+    let _ = std::fs::remove_dir_all(&shared);
+}
+
 #[test]
 fn sandbox_writes_and_exec_persistence() {
     let f = Fixture::new();
@@ -240,7 +368,12 @@ fn sandbox_writes_and_exec_persistence() {
         "printf x > $H/Library/LaunchAgents/x.plist",
         "printf x > $H/.gitconfig",
         "printf x > $H/.config/agentacl/policy.yaml",
-        "mkdir -p '$H/Library/Application Support/AgentACL' && printf x > \"$H/Library/Application Support/AgentACL/x\"",
+        "mkdir -p \"$H/Library/Application Support/AgentACL\" && printf x > \"$H/Library/Application Support/AgentACL/x\"",
+        "mkdir -p .husky && printf x > .husky/pre-commit",
+        "mkdir -p pkg/__pycache__ && printf x > pkg/__pycache__/mod.cpython-39.pyc",
+        "mkdir -p $H/Library/Python/3.9/lib/python/site-packages && printf x > $H/Library/Python/3.9/lib/python/site-packages/evil.pth",
+        "mkdir -p $H/.local/lib/python3.12/site-packages && printf x > $H/.local/lib/python3.12/site-packages/evil.pth",
+        "mkdir -p $H/Library/Caches/com.apple.python/x && printf x > $H/Library/Caches/com.apple.python/x/mod.pyc",
         "mkdir -p .agentacl && printf x > .agentacl/policy.yaml",
     ] {
         let (c, o) = f.run(&p, cmd);
@@ -260,6 +393,15 @@ fn sandbox_network_and_listen() {
     let p = f.profile(&pol, input());
     let (c, _) = f.run(&p, "curl -sS -m 3 https://example.com -o /dev/null");
     assert_ne!(c, 0, "direct egress must fail");
+    // A raw socket that ignores the proxy, to a listener that is reachable
+    // outside the sandbox (no internet needed): refused by the kernel.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let ctl = Command::new("/usr/bin/nc").args(["-z", "-w", "2", "127.0.0.1", &port.to_string()]).status().unwrap();
+    assert!(ctl.success(), "positive control: the listener is reachable unsandboxed");
+    let (c, o) = f.run(&p, &format!("/usr/bin/nc -z -w 2 127.0.0.1 {port}"));
+    assert_ne!(c, 0, "direct socket to a non-proxy port succeeded: {o}");
+    drop(listener);
     let (c, _) = f.run(&p, "nc -l -w1 127.0.0.1 18777");
     assert_ne!(c, 0, "unlisted listen must fail");
     let (c, o) = f.run(&p, "nc -l 127.0.0.1 18778 & pid=$!; sleep 0.5; kill $pid 2>/dev/null && echo bound");
@@ -274,12 +416,40 @@ fn sandbox_unix_socket_deny() {
     let s = sock.to_string_lossy().into_owned();
     let pol = f.policy(None);
     let socks = [s.clone()];
-    let p = f.profile(&pol, CompileInput { socket_denies: &socks, ..input() });
+    // The socket is also allowed, so only the deny can refuse it (the
+    // profile's default would refuse any unlisted socket anyway).
+    let allowed = f.profile(&pol, CompileInput { socket_allows: &socks, ..input() });
+    let (c, o) = f.run(&allowed, &format!("nc -w 1 -U {s} </dev/null"));
+    assert_eq!(c, 0, "positive control: an allowed socket connects: {o}");
+    let p = f.profile(&pol, CompileInput { socket_allows: &socks, socket_denies: &socks, ..input() });
     let text = std::fs::read_to_string(&p).unwrap();
     assert!(text.contains(&format!("(path-literal \"{s}\")")));
-    let (c, _) = f.run(&p, &format!("nc -U {s} </dev/null"));
+    let (c, _) = f.run(&p, &format!("nc -w 1 -U {s} </dev/null"));
     assert_ne!(c, 0);
     drop(listener);
+}
+
+/// The real socket list the supervisor denies (ssh-agent via SSH_AUTH_SOCK,
+/// the user's Docker socket), end to end through the compiled profile.
+#[test]
+fn credential_sockets_are_denied() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.home.join(".docker/run")).unwrap();
+    let ssh = f.root.join("ssh-agent.sock");
+    let docker = f.home.join(".docker/run/docker.sock");
+    let _l1 = std::os::unix::net::UnixListener::bind(&ssh).unwrap();
+    let _l2 = std::os::unix::net::UnixListener::bind(&docker).unwrap();
+    let socks = crate::supervisor::credential_sockets(Some(ssh.clone()), Path::new("/nonexistent/docker.sock"), &f.home);
+    assert_eq!(socks.len(), 2, "{socks:?}");
+    // Also allowed, so only the deny can refuse them (see sandbox_unix_socket_deny).
+    let allowed = f.profile(&f.policy(None), CompileInput { socket_allows: &socks, ..input() });
+    let p = f.profile(&f.policy(None), CompileInput { socket_allows: &socks, socket_denies: &socks, ..input() });
+    for s in [&ssh, &docker] {
+        let (c, o) = f.run(&allowed, &format!("/usr/bin/nc -w 1 -U '{}' </dev/null", s.display()));
+        assert_eq!(c, 0, "positive control: {} connects when only allowed: {o}", s.display());
+        let (c, o) = f.run(&p, &format!("/usr/bin/nc -w 1 -U '{}' </dev/null", s.display()));
+        assert_ne!(c, 0, "{} reachable from the sandbox: {o}", s.display());
+    }
 }
 
 #[test]
@@ -295,6 +465,12 @@ fn sandbox_exec_deny() {
     assert_eq!((c, o.trim()), (0, "control"));
     let (c, o) = f.run(&p, "./bin/terraform hi");
     assert_ne!(c, 0, "{o}");
+    // setuid binaries can't be executed under any profile. `sudo -n` outside a
+    // sandbox fails too, but with a password message, not EPERM.
+    for cmd in ["/usr/bin/sudo -n true", "/usr/bin/su -c true root </dev/null"] {
+        let (c, o) = f.run(&p, cmd);
+        assert!(c != 0 && o.contains("Operation not permitted"), "{cmd} under the sandbox: {c} {o}");
+    }
 }
 
 /// Writes a fixture + default-policy profile to $AF_DUMP_DIR for baseline capture.

@@ -49,3 +49,19 @@ filesystem:
     - { path: "${HOME}/.config/fish/**", id: exec-persistence, reason: "Shell startup files are protected" }
 
     - { path: "${HOME}/Library/LaunchAgents/**", id: exec-persistence, reason: "Launch agents run outside the sandbox and are protected" }
+
+    # Hooks outside .git (husky and other core.hooksPath directories in the
+    # project). A hooksPath elsewhere is a residual risk (threat model T19).
+    - { path: "${PROJECT}/.husky/**", id: exec-persistence, reason: "Git hooks run outside the sandbox and are protected" }
+
+    # Python code that later runs unsandboxed: bytecode caches (a crafted .pyc
+    # with matching source mtime runs instead of the source and doesn't show
+    # in git diff) and user site-packages (.pth files run at every start).
+    # Agents get a per-session bytecode cache (PYTHONPYCACHEPREFIX) instead.
+    # Deleting a folder that contains __pycache__ therefore fails inside the
+    # sandbox (as with a nested .git). A folder prepared elsewhere and renamed
+    # into the project is not caught (threat model T19).
+    - { path: "${PROJECT}/**/__pycache__/**", id: exec-persistence, reason: "Python bytecode runs outside the sandbox and is protected" }
+    - { path: "${HOME}/Library/Caches/com.apple.python/**", id: exec-persistence, reason: "Python bytecode runs outside the sandbox and is protected" }
+    - { path: "${HOME}/Library/Python/**", id: exec-persistence, reason: "Python packages run outside the sandbox and are protected" }
+    - { path: "${HOME}/.local/lib/**/site-packages/**", id: exec-persistence, reason: "Python packages run outside the sandbox and are protected" }

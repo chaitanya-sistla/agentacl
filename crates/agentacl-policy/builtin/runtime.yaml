@@ -50,6 +50,9 @@ filesystem:
     - "/dev/autofs_nowait"
     - "${HOME}/.CFUserTextEncoding"
     - "${HOME}/.gitconfig"
+    # Python user site-packages (pip install --user), read-only: agent-run
+    # Python can import them; writing stays denied (it would run later).
+    - "${HOME}/Library/Python/**"
     - "${HOME}/.config/git/**"
   allow_write:
     - "${TMPDIR}/**"

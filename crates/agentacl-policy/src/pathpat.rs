@@ -151,6 +151,21 @@ impl PathPattern {
         ancestors_inclusive(&top)
     }
 
+    /// For a glob `<anchor>/**/<tail>`: the same `**/<tail>` below `root`.
+    /// Protects matched names in places a directory holding a match can be
+    /// renamed to (`mv certs $TMPDIR/c`), where the original anchor no longer
+    /// applies. `None` for any other shape.
+    pub fn rerooted(&self, root: &str) -> Option<PathPattern> {
+        if self.kind != PatKind::Glob {
+            return None;
+        }
+        let rest = self.source.strip_prefix(self.anchor.trim_end_matches('/'))?;
+        if !rest.starts_with("/**/") {
+            return None;
+        }
+        Self::parse(&Expanded { text: format!("{}{rest}", root.trim_end_matches('/')), var_root: None }).ok()
+    }
+
     #[doc(hidden)]
     pub fn regex_body(&self) -> &str {
         &self.body

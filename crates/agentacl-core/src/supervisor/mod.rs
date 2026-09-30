@@ -251,12 +251,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
             }
         }
     }
-    let mut socket_denies = Vec::new();
-    for s in [std::env::var("SSH_AUTH_SOCK").ok().map(PathBuf::from), Some("/var/run/docker.sock".into()), Some(human.home.join(".docker/run/docker.sock"))].into_iter().flatten() {
-        if let Ok(c) = std::fs::canonicalize(&s) {
-            socket_denies.push(c.to_string_lossy().into_owned());
-        }
-    }
+    let socket_denies = credential_sockets(std::env::var("SSH_AUTH_SOCK").ok().map(PathBuf::from), Path::new("/var/run/docker.sock"), &human.home);
 
     let mut agent_argv = vec![binary.to_string_lossy().into_owned()];
     agent_argv.extend(reqs.launch_args.iter().cloned());
@@ -550,6 +545,18 @@ pub fn request_stop(pid: i32) -> Result<()> {
         bail!("could not signal supervisor {pid}: {}", std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Unix sockets that hand out credentials or root-equivalent access (the
+/// ssh-agent, Docker), resolved to the real paths the kernel checks. Only the
+/// ones that exist are returned.
+pub fn credential_sockets(ssh_auth_sock: Option<PathBuf>, system_docker: &Path, home: &Path) -> Vec<String> {
+    [ssh_auth_sock, Some(system_docker.to_path_buf()), Some(home.join(".docker/run/docker.sock"))]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 pub fn request_restart(pid: i32) -> Result<()> {

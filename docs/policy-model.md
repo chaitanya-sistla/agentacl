@@ -294,7 +294,7 @@ Rules are data (YAML), grouped with an id and a reason per group. Sketch:
 | `aws` | `${HOME}/.aws/credentials`, `${HOME}/.aws/sso/cache/**`, `${HOME}/.aws/cli/cache/**` |
 | `gcp` | `${HOME}/.config/gcloud/**` |
 | `azure` | `${HOME}/.azure/**` |
-| `kube` | `${HOME}/.kube/config`, `${HOME}/.kube/**/config` |
+| `kube` | `${HOME}/.kube/**` (the whole directory: kubeconfigs can sit at any depth, and a name rule such as `**/config` would also match every `.git/config`) |
 | `terraform` | `${HOME}/.terraform.d/credentials.tfrc.json`; under `${HOME}` and `${PROJECT}`: `**/*.tfstate`, `**/*.tfstate.backup`, `**/terraform.tfvars` |
 | `git-creds` | `${HOME}/.git-credentials`, `${HOME}/.config/gh/hosts.yml` |
 | `package-creds` | `${HOME}/.npmrc`, `${HOME}/.pypirc`, `${HOME}/.netrc`, `${HOME}/.docker/config.json`, `${HOME}/.cargo/credentials.toml` |

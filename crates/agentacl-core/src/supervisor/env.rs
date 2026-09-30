@@ -69,6 +69,13 @@ pub fn build(inherited: impl IntoIterator<Item = (String, String)>, passthrough:
     vars.push(("NO_PROXY".into(), String::new()));
     vars.push(("no_proxy".into(), String::new()));
     vars.push(("TMPDIR".into(), format!("{tmpdir}/")));
+    // Python bytecode goes to the session's temp dir, always: the usual
+    // caches (~/Library/Caches/com.apple.python, a project's __pycache__) are
+    // write-denied because a planted .pyc runs later, unsandboxed, and an
+    // inherited prefix could point somewhere the sandbox can write (/tmp)
+    // that the human's own Python also uses.
+    vars.retain(|(k, _)| k != "PYTHONPYCACHEPREFIX");
+    vars.push(("PYTHONPYCACHEPREFIX".into(), format!("{tmpdir}/pycache")));
     vars.push(("AGENTACL_SESSION".into(), session_id.into()));
     stripped.sort();
     ChildEnv { vars, stripped }
@@ -107,6 +114,9 @@ mod tests {
         assert_eq!(get("SSH_AUTH_SOCK"), None);
         assert_eq!(get("HTTPS_PROXY").as_deref(), Some("http://127.0.0.1:4242"));
         assert_eq!(get("TMPDIR").as_deref(), Some("/t/"));
+        assert_eq!(get("PYTHONPYCACHEPREFIX").as_deref(), Some("/t/pycache"));
+        let own = build(vec![("PYTHONPYCACHEPREFIX".to_string(), "/tmp/shared".to_string())], &[], &[], 1, "/t", "agt_1");
+        assert_eq!(own.vars.iter().filter(|(k, _)| k == "PYTHONPYCACHEPREFIX").map(|(_, v)| v.as_str()).collect::<Vec<_>>(), vec!["/t/pycache"], "always the session's own cache");
         assert_eq!(e.stripped, vec!["AWS_SECRET_ACCESS_KEY", "FOO_TOKEN", "SSH_AUTH_SOCK"]);
     }
 }

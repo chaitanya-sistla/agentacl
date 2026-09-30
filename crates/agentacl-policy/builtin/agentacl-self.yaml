@@ -4,6 +4,10 @@ version: v1
 name: agentacl-self
 
 filesystem:
+  # The state dir holds the audit log (other sessions' events, including
+  # command lines) and the console's live decisions: agents never need it.
+  deny_read:
+    - { path: "${AGENTACL_STATE}/**", id: agentacl-self, reason: "AgentACL state and audit log are protected" }
   deny_write:
     - { path: "${AGENTACL_STATE}/**", id: agentacl-self, reason: "AgentACL state and audit log are protected" }
     - { path: "${AGENTACL_CONFIG}/**", id: agentacl-self, reason: "AgentACL policy and trust configuration are protected" }

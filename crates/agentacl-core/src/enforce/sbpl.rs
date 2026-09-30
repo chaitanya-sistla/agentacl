@@ -79,6 +79,31 @@ fn fold(s: &str) -> String {
         .collect()
 }
 
+/// `p` is `root` or below it.
+fn under(p: &str, root: &str) -> bool {
+    let (p, root) = (p.as_bytes(), root.as_bytes());
+    root == b"/" || p.eq_ignore_ascii_case(root) || (p.len() > root.len() && p[..root.len()].eq_ignore_ascii_case(root) && p[root.len()] == b'/')
+}
+
+/// Directories the sandbox may create entries in (write-allow subpaths and
+/// glob anchors; `/dev` and `/` are left out).
+fn write_roots(writes: &[&Rule]) -> Vec<String> {
+    let mut roots: BTreeSet<String> = BTreeSet::new();
+    for r in writes {
+        let Matcher::Path(p) = &r.matcher else { continue };
+        let root = match p.kind() {
+            PatKind::Literal(_) => continue,
+            PatKind::Subpath(s) => s.clone(),
+            PatKind::Glob => p.anchor().to_string(),
+        };
+        // A writable `/` is the same as `defaults.filesystem: allow`.
+        if root != "/" && !under(&root, "/dev") {
+            roots.insert(root);
+        }
+    }
+    roots.into_iter().collect()
+}
+
 fn emit(out: &mut String, head: &str, filters: &[String]) {
     if filters.is_empty() {
         return;
@@ -201,6 +226,35 @@ pub fn compile_profile(policy: &PolicySet, input: &CompileInput) -> Result<Strin
         }
         emit(&mut out, &format!("deny file-write-unlink file-link{}", tag(&r.policy, &r.id)?), &filters);
     }
+    // A read-deny glob `<anchor>/**/<name>` protects by name only below its
+    // anchor. When a writable location overlaps the anchor, a directory
+    // holding a match can be renamed out to another writable location
+    // (`mv certs $TMPDIR/c`), so the name is also denied there. Under
+    // `defaults.filesystem: allow` everything is writable and this is not
+    // done (security-guarantees.md).
+    if defaults.filesystem != Effect::Allow {
+        let roots = write_roots(&writes);
+        for r in deny_read.iter() {
+            let Matcher::Path(p) = &r.matcher else { continue };
+            let anchor = p.anchor();
+            if !roots.iter().any(|w| under(w, anchor) || under(anchor, w)) {
+                continue;
+            }
+            for w in roots.iter().filter(|w| !under(w, anchor)) {
+                let Some(moved) = p.rerooted(w) else { continue };
+                let excepts: Vec<PathPattern> = r.excepts.iter().filter_map(|e| e.rerooted(w)).collect();
+                let m = path_filter(&moved)?;
+                let f = if excepts.is_empty() {
+                    m
+                } else {
+                    let ex = excepts.iter().map(path_filter).collect::<Result<Vec<_>>>()?.join(" ");
+                    format!("(require-all {m} (require-not (require-any {ex})))")
+                };
+                let _ = writeln!(out, "(deny file-read* file-map-executable file-write*{} {f})", tag(&r.policy, &r.id)?);
+            }
+        }
+    }
+
     let extra = input.extra_denies.iter().map(|p| lit(p)).collect::<Result<Vec<_>>>()?;
     emit(&mut out, &format!("deny file-read* file-write*{}", tag("builtin", "hardlink")?), &extra);
 

@@ -314,6 +314,8 @@ pub struct LiveNetDecider {
     /// RFC 3339 session start.
     pub started_at: String,
     pub notify: bool,
+    /// How long a connection waits for an answer ([`ASK_TIMEOUT`]).
+    pub ask_timeout: Duration,
     /// `host:port` approved for this session.
     session_allow: Mutex<HashSet<String>>,
     /// `host:port` → the prompt connections to it are waiting on.
@@ -332,6 +334,7 @@ impl LiveNetDecider {
             project,
             started_at,
             notify: true,
+            ask_timeout: ASK_TIMEOUT,
             session_allow: Mutex::new(HashSet::new()),
             waiting: Mutex::new(HashMap::new()),
             last_notify: Mutex::new(None),
@@ -372,12 +375,12 @@ impl LiveNetDecider {
                     host: key.to_string(),
                     port,
                     created: crate::audit::format_rfc3339(secs(now), 0),
-                    expires: crate::audit::format_rfc3339(secs(now + ASK_TIMEOUT), 0),
+                    expires: crate::audit::format_rfc3339(secs(now + self.ask_timeout), 0),
                 };
                 if request(&self.state_dir, &a).is_err() {
                     return refuse("could not queue the request for the console".into());
                 }
-                let deadline = Instant::now() + ASK_TIMEOUT;
+                let deadline = Instant::now() + self.ask_timeout;
                 w.insert(site.clone(), Waiting { id: a.id.clone(), deadline, waiters: 1 });
                 if self.notify {
                     let mut last = self.last_notify.lock().unwrap();
@@ -413,7 +416,7 @@ impl LiveNetDecider {
                 Self::console(Effect::Allow, "approved", format!("{site} approved in the AgentACL console"))
             }
             Some(Answer::Block | Answer::BlockAlways) => refuse(format!("{site} was blocked in the AgentACL console")),
-            None => refuse(format!("no answer in the AgentACL console within {} s", ASK_TIMEOUT.as_secs())),
+            None => refuse(format!("no answer in the AgentACL console within {} s", self.ask_timeout.as_secs())),
         }
     }
 }
@@ -550,6 +553,64 @@ mod tests {
         // explicit denies never prompt
         assert_eq!(d.host("evil.example.com", 443).effect, Effect::Deny);
         assert!(pending(&s).is_empty());
+    }
+
+    #[test]
+    fn ask_times_out_to_blocked_and_never_resolves_first() {
+        let t = tempfile::tempdir().unwrap();
+        let s = t.path().to_path_buf();
+        set_mode(&s, Mode::Ask).unwrap();
+        let mut d = decider(&s, POLICY, "2026-01-01T00:00:00.000Z");
+        d.ask_timeout = Duration::from_millis(800);
+        // The prompt is raised on the name alone: a name that can't resolve
+        // still gets one, so no DNS answer is needed (or used) before asking.
+        let started = Instant::now();
+        let waiting = std::thread::spawn(move || d.host("agentbreak-unresolvable.invalid", 443));
+        let mut seen = vec![];
+        while seen.is_empty() && started.elapsed() < Duration::from_millis(700) {
+            seen = pending(&s);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(seen.len(), 1, "a prompt exists while the connection waits");
+        assert_eq!((seen[0].host.as_str(), seen[0].port), ("agentbreak-unresolvable.invalid", 443));
+        let r = waiting.join().unwrap();
+        assert_eq!(r.effect, Effect::Deny);
+        assert!(r.reason.contains("no answer"), "{}", r.reason);
+        assert!(started.elapsed() >= Duration::from_millis(800), "waited for the answer");
+        // Expired prompts are no longer offered.
+        assert!(pending(&s).is_empty());
+    }
+
+    #[test]
+    fn ask_rate_limits_prompts() {
+        let t = tempfile::tempdir().unwrap();
+        let s = t.path().to_path_buf();
+        set_mode(&s, Mode::Ask).unwrap();
+        let mut d = decider(&s, POLICY, "2026-01-01T00:00:00.000Z");
+        d.ask_timeout = Duration::from_secs(5);
+        let d = Arc::new(d);
+        let waiting: Vec<_> = (0..MAX_PENDING)
+            .map(|i| {
+                let d = d.clone();
+                std::thread::spawn(move || d.host(&format!("site{i}.example.com"), 443))
+            })
+            .collect();
+        while pending(&s).len() < MAX_PENDING {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // One more site is refused at once, without a prompt.
+        let started = Instant::now();
+        let r = d.host("one-too-many.example.com", 443);
+        assert_eq!(r.effect, Effect::Deny);
+        assert!(r.reason.contains("too many"), "{}", r.reason);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(pending(&s).len(), MAX_PENDING);
+        for a in pending(&s) {
+            answer(&s, &a.id, Answer::Block).unwrap();
+        }
+        for h in waiting {
+            assert_eq!(h.join().unwrap().effect, Effect::Deny);
+        }
     }
 
     #[test]
