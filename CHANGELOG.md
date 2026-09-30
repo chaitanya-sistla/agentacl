@@ -7,6 +7,41 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+### Added
+- `docs/current-state.md`: an audit of what exists, what is enforced (with
+  the test behind each claim), what is observed and what is planned.
+- `docs/security-guarantees.md`: the claims matrix, using only ENFORCED,
+  PARTIALLY ENFORCED, OBSERVED, PLANNED and NOT SUPPORTED, each with its
+  evidence.
+- Sandbox tests for every built-in secret group (read and overwrite, under a
+  policy that otherwise allows all of home), and for delegation through
+  nested shells, Python and Python subprocesses.
+- `scripts/demo/`: deterministic, repeatable demo scripts using only fake
+  secrets in `/tmp/agentacl-demo`.
+
+### Security
+- `exec-persistence` now also write-protects `.husky` hooks, project
+  `__pycache__`, Python user site-packages (`.pth` files run at every start)
+  and Apple's Python bytecode cache.
+- `agentacl-self` now also denies *reading* AgentACL's state directory (the
+  audit log holds every session's events, including command lines).
+- Moving a folder that holds a name-protected secret (`mv certs $TMPDIR/c`,
+  then read `server.pem`) no longer exposes it: name rules such as
+  `**/*.pem` are now also enforced in every other writable location.
+- The `kube` group now protects all of `~/.kube`, not just files named
+  `config`.
+
+### Changed
+- Python run by an agent always keeps its bytecode cache in the session's
+  temp directory (`PYTHONPYCACHEPREFIX`), instead of probing
+  `~/Library/Caches/com.apple.python`, which stays closed. Agent-run Python
+  can read your user site-packages (read-only).
+- README restructured: problem, demo, how it works, guarantees, then the
+  agent-identity vision.
+
+### Fixed
+- Threat model T22 described the console's old bearer-token auth.
+
 ## [0.2.0] - 2026-09-30
 
 **See and decide what your AI agents reach for.** v0.1.0 made AgentACL a

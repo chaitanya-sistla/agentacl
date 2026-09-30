@@ -1,171 +1,226 @@
-# AgentACL: access control and sandboxing for AI coding agents on macOS
+# AgentACL
 
-**Stop Claude Code, Codex, Gemini CLI, Copilot CLI and OpenCode from reading
-your secrets. AgentACL enforces it in the macOS kernel, not in the prompt.**
+**Claude has your permissions. We gave Claude its own.**
+
+OS-level permissions for AI coding agents on macOS. Start Claude Code, Codex or
+another agent with `agentacl run` and it runs inside a kernel sandbox: it and
+every process it starts can't read your secrets, change files outside the
+project (and temp directories) or reach networks you haven't approved.
 
 [![CI](https://github.com/chaitanya-sistla/agentacl/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitanya-sistla/agentacl/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/chaitanya-sistla/agentacl)](https://github.com/chaitanya-sistla/agentacl/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-![macOS](https://img.shields.io/badge/macOS-13%2B-black)
+![macOS](https://img.shields.io/badge/macOS-14%2B-black)
 
-AI coding agents run shell commands **as you**. Anything you can read, they
-can read: SSH keys, `.env` files, AWS and GCP credentials, Terraform state,
-browser cookies. They can also send it anywhere on the internet.
-
-AgentACL is an open-source **security layer for AI coding agents**. It runs
-each agent inside a macOS kernel sandbox (Seatbelt), with a network egress
-firewall and an audit log. The agent keeps full access to your project and
-loses access to everything it shouldn't touch. You decide what that is, in a
-local web console or a YAML policy.
-
-![AgentACL access graph showing what an AI coding agent can read and change: the project is open, secrets are blocked](docs/images/access-graph.png)
-
-## Why AgentACL
-
-| | Without AgentACL | With AgentACL |
-|---|---|---|
-| Agent reads `~/.ssh`, `~/.aws`, `.env`, browser cookies | ✅ succeeds | ⛔ `Operation not permitted` (kernel) |
-| Agent uploads data to an unknown site | ✅ succeeds | ⛔ refused by the egress proxy, or held until you approve |
-| Agent plants a git hook or edits `~/.zshrc` | ✅ succeeds | ⛔ blocked |
-| Subprocesses (`sh`, `python`, `curl`) | inherit everything | inherit the same sandbox |
-| You know what the agent tried | no record | every attempt logged: agent, process chain, rule |
-| An agent runs unprotected | invisible | flagged in the console |
-
-Instructions like "don't read secrets" and an agent's own settings are not a
-security boundary: a prompt injection in a README, an issue or a dependency
-can override them. AgentACL's boundary is outside the agent, in the kernel.
-
-**Supported agents:** Claude Code, OpenAI Codex CLI, Gemini CLI, GitHub Copilot
-CLI, OpenCode, and any other command-line program.
-
-## See it work
-
-```console
-$ agentacl run -- claude
-> cat .env
-cat: .env: Operation not permitted
-
-AgentACL session agt_01M3R5TD4JXJNHSNNFS45QM0BK ended (exit 0)
-  Blocked by policy: 1    Blocked by sandbox default: 0    Observed (not blocked): 0
-  BLOCKED   filesystem.read  /Users/you/src/app/.env (protect-secrets/env-files)
-
-$ agentacl policy check --path ~/.ssh/id_ed25519
-Decision:  DENY
-Policy:    protect-secrets (ssh)
-Reason:    SSH keys and configuration are protected
+```text
+Claude Code
+ └─ bash
+     └─ python3 -c "open('/Users/you/.aws/credentials').read()"
+          → PermissionError: [Errno 1] Operation not permitted
+            (refused by the macOS kernel sandbox, not by the agent)
 ```
 
-### A real Claude Code session
+Not a prompt. Not a hook. Not an MCP rule. For an agent started with
+`agentacl run`, the operating system refuses the read, for the agent and for
+every child process it spawns.
 
-![Claude Code inside the AgentACL sandbox: a file read is refused by the kernel, then allowed after the rule changes](docs/images/example-session.png)
+<!-- DEMO: the maintainer records the GIF with scripts/demo/ and inserts it here. -->
 
-Claude Code's first read of `rustfmt.toml` is refused by the kernel
-(`Operation not permitted`). Claude says so plainly and doesn't try to switch
-the sandbox off: there is nothing inside the sandbox it can switch. Once the
-rules allow the file, the same conversation reads it.
+## Why
 
-## The console
+An AI coding agent runs as **you**: same Unix user, same permissions. Anything
+you can read, it can read (SSH keys, `.env` files, cloud credentials, browser
+cookies), and anything you can reach on the network, it can reach.
 
-`agentacl ui` opens a local web console (127.0.0.1 only) covering every agent
-on the machine.
+The agent's own permission settings, `CLAUDE.md` instructions and tool hooks
+all live **inside** the agent's world. They are useful, but a prompt
+injection in a README, an issue or a dependency can talk its way around
+them. AgentACL puts the boundary **outside** the agent, in the macOS kernel,
+where the agent can't change it.
 
-| **Overview:** what was blocked, by hour and by kind; top sites and files | **Requests:** everything agents tried and couldn't, as decisions |
-|---|---|
-| ![AgentACL overview dashboard with blocked actions per hour and top blocked sites](docs/images/overview.png) | ![AgentACL requests inbox grouping what AI agents tried to access](docs/images/requests.png) |
-| **Network:** every site agents reach; allow or block live, or set unknown sites to *Ask me* | **One-click rules:** each change says what is saved where and what happens to running agents |
-| ![AgentACL network page listing sites AI agents connected to, with allow and block](docs/images/network.png) | ![Dialog to allow a site for AI coding agents](docs/images/allow-site.png) |
-| **Agents:** protected or not, rules up to date, restart or stop | **Activity:** the full audit log, with filters and CSV export |
-| ![AgentACL agents page showing protected and unprotected Claude Code and Codex sessions](docs/images/agents.png) | ![AgentACL audit log of AI agent file and network activity](docs/images/activity.png) |
-
-With Network set to *Ask me*, an agent reaching a new site waits while you
-allow or block it in the console, with a desktop notification. The decision
-applies at once, with no restart.
-
-## Install
+## Quick start
 
 ```sh
 V=0.2.0
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/SHA256SUMS
-shasum -a 256 -c SHA256SUMS --ignore-missing     # OK
+shasum -a 256 -c SHA256SUMS --ignore-missing     # must print: OK
 tar xzf agentacl-$V-macos-universal.tar.gz
 sudo install -m 755 agentacl-$V-macos-universal/agentacl /usr/local/bin/
+
+cd ~/src/your-project
+agentacl run -- claude        # or codex, gemini, opencode, any command
 ```
 
-Every release is built by GitHub Actions from a tagged commit, with checksums
-and a build-provenance attestation (`gh attestation verify <file> -R chaitanya-sistla/agentacl`).
+Homebrew is on the way; until it lands, the steps above are the supported
+install. Releases are built by GitHub Actions from a tagged commit, with
+checksums and a [build-provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations).
 From source: `cargo install --locked --git https://github.com/chaitanya-sistla/agentacl agentacl-cli`.
-
-## Use
-
-```sh
-agentacl discover          # which AI agents are installed and running
-agentacl run -- claude     # run any agent protected (codex, gemini, copilot, opencode…)
-agentacl ui                # open the console
-```
 
 To always start an agent protected: `alias claude="agentacl run -- claude"`.
 
-**Protected by default:**
-- `.env*`, `~/.ssh`, and AWS, GCP, Azure and Kubernetes credentials;
-- Terraform state, git and package-registry tokens, private keys and GPG;
-- browser cookies and saved passwords;
-- git hooks and shell startup files;
-- secret environment variables (`*_TOKEN`, `AWS_*`, …).
+## What gets protected by default
 
-You change the rules in the console or in `~/.config/agentacl/policy.yaml`.
+- `.env` files (anywhere), `~/.ssh`, AWS, GCP, Azure and Kubernetes credentials
+- Terraform state and credentials, git and package-registry tokens, private
+  keys, GPG keys
+- browser cookies and saved passwords
+- git hooks and config, shell startup files, LaunchAgents, agent and editor
+  configs, Python caches and user packages: the usual places to plant code
+  that runs later, outside the sandbox (build files such as `package.json`
+  are flagged for review instead, since the agent must edit them)
+- secret environment variables (`*_TOKEN`, `AWS_*`, …), which are withheld
+- all network egress except through AgentACL's proxy, which blocks sites no
+  rule allows
+
+Your project stays readable and writable. Change the rules in the console
+(`agentacl ui`) or in `~/.config/agentacl/policy.yaml`.
+
+## What AgentACL actually enforces
+
+Short version:
+- **Enforced** by the kernel or the proxy, with tests: everything above,
+  for agents started with `agentacl run` and all their child processes,
+  except as noted here.
+- **Partly enforced**: planting code. Writing hooks, configs and caches in
+  place is blocked, but a folder built elsewhere and moved into the project
+  is not checked. Build files are flagged, not blocked.
+- **Observed, not blocked**:
+  - agents started without `agentacl run`;
+  - argument-level rules like `git push *`.
+- **Planned**:
+  - system-wide enforcement for any agent, however it was launched (Endpoint
+    Security);
+  - allow-once approvals for files.
+
+The full matrix, with the test behind every "enforced", is in
+**[docs/security-guarantees.md](docs/security-guarantees.md)**. If anything
+here reads stronger than that file, the file is right.
+
+## How it works
+
+```text
+agentacl run -- claude
+  │
+  ├─ policy: built-ins → your rules → project rules (restrict-only)
+  │     compiled to a Seatbelt (SBPL) profile, deny rules last
+  │
+  ├─ sandbox-exec  ──►  claude  ──►  bash  ──►  python  …   (kernel sandbox, inherited)
+  │
+  ├─ network: only 127.0.0.1:<proxy> is reachable ──► AgentACL proxy ──► allowed sites
+  │
+  └─ audit: kernel denials + proxy decisions → local SQLite log, console, `agentacl events`
+```
+
+The enforcement mechanism is macOS Seatbelt, the same kernel sandbox Apple
+ships and major agent vendors use. AgentACL didn't invent it: it turns a
+readable policy into a Seatbelt profile, adds a network proxy, and records
+what was blocked. Details: [macOS enforcement](docs/macos-enforcement.md),
+[threat model](docs/threat-model.md).
+
+## The console
+
+`agentacl ui` opens a local web console (127.0.0.1 only) for every agent on
+the machine.
+
+| **Overview:** what was blocked, by hour and by kind; top sites and files | **Requests:** everything agents tried and couldn't, as decisions |
+|---|---|
+| ![AgentACL overview dashboard with blocked actions per hour and top blocked sites](docs/images/overview.png) | ![AgentACL requests inbox grouping what AI agents tried to access](docs/images/requests.png) |
+| **Network:** allow or block sites live, or set unknown sites to *Ask me* | **Agents:** protected or not, restart or stop |
+| ![AgentACL network page listing sites AI agents connected to, with allow and block](docs/images/network.png) | ![AgentACL agents page showing protected and unprotected Claude Code and Codex sessions](docs/images/agents.png) |
+
+With Network set to *Ask me*, an agent reaching a new site waits up to 25
+seconds while you allow or block it, with a desktop notification.
+
+## A real Claude Code session
+
+![Claude Code inside the AgentACL sandbox: a file read is refused by the kernel, then allowed after the rule changes](docs/images/example-session.png)
+
+Claude's first read of `rustfmt.toml` is refused by the kernel. It says so
+and doesn't try to switch the sandbox off: nothing inside the sandbox can.
+Once the rules allow the file, the same conversation reads it.
+
+## Supported agents
+
+| Agent | Discovery | Supervised with `agentacl run` |
+|---|---|---|
+| Claude Code | ✅ by code signature | ✅ verified by the maintainer (login, network, blocks) |
+| OpenAI Codex CLI | ✅ by code signature | ⚠️ launch settings provided (turns off Codex's own nested sandbox); not yet verified end to end |
+| Gemini CLI, GitHub Copilot CLI, OpenCode | ✅ by install path | ⚠️ generic launch; not yet verified end to end |
+| Any other command-line program | n/a | ✅ generic (the test suite runs shells, Python and git this way) |
+
+Verified it with another agent? Please [open an issue](https://github.com/chaitanya-sistla/agentacl/issues/new/choose) so we can update this table.
+
+## Agent identity: where this is going
+
+Humans have identities. Machines and workloads have identities. AI agents
+act on our behalf but borrow ours. AgentACL's longer-term aim is identity and
+access control for agents running on your machine:
+
+```text
+Human → Machine → Agent → Agent session → Delegated processes → Resources
+you     your Mac   Claude   agt_…          bash → terraform       AWS
+```
+
+The goal is authorization that considers **why** a process exists, not only
+which binary runs: you running `terraform apply` and Claude causing
+`terraform apply` can deserve different answers. Today AgentACL records the
+agent, the session and a best-effort delegation chain on every event;
+enforcement is by the sandbox, not by the chain.
+
+## Limitations
+
+- Protection applies to agents started with `agentacl run`. Agents started
+  any other way are discovered and flagged, not blocked.
+- A policy change applies to running agents on restart (the conversation
+  resumes). Network decisions from the console apply live.
+- Rules with arguments (`git push *`) are observed, not blocked.
+- A copied or renamed binary dodges a program block by name.
+- Seatbelt (`sandbox-exec`) is deprecated by Apple, though still shipped and
+  widely used.
+- Data sent to a site you allowed isn't inspected.
+- Claude Code keeps its login in the macOS keychain, so its launch profile
+  can reach the keychain service; items stay protected by their own access
+  rules. Use `ANTHROPIC_API_KEY` to avoid this.
+- Tested on macOS 14 and 15 on Apple Silicon. Intel binaries are built but
+  not run in CI.
+- Binaries are not yet notarized; macOS may warn on first run.
+
+Full list: [security-guarantees.md](docs/security-guarantees.md) and the
+[threat model](docs/threat-model.md).
+
+## Roadmap
+
+- Homebrew install
+- AgentBreak: reproducible, vendor-neutral security tests for local AI-agent
+  boundaries, with machine-readable results
+- Endpoint Security backend: system-wide enforcement, argument-aware program
+  rules, allow-once approvals (requires an Apple entitlement)
+- Signed and notarized releases
 
 ## FAQ
 
 ### How do I stop Claude Code from reading my `.env` file?
 
 Start it with `agentacl run -- claude`. `.env` files are blocked by default,
-anywhere, and the block is enforced by the kernel for Claude Code and every
-command it runs.
-
-### Does AgentACL work with Codex, Gemini CLI, Copilot CLI and OpenCode?
-
-Yes. `agentacl run -- <command>` works with any command-line agent, and
-`agentacl discover` finds all five, installed or running.
-
-### How is this different from the agent's own sandbox or permission prompts?
-
-Those live inside the agent and are configured by the same files and prompts
-an attacker can influence. AgentACL sits outside: the agent can't change
-or turn off its rules.
-
-### Can I control which websites an agent can reach?
-
-Yes. All agent traffic goes through AgentACL's proxy. The Network page lists
-every site with allowed and blocked counts, and blocks apply to running agents
-immediately. In *Ask me* mode, you approve new sites as the agent reaches for
-them.
+anywhere, for Claude Code and every command it runs.
 
 ### Does it send anything to the cloud?
 
-No. Rules, the audit log and the console are all local to your Mac.
+No. Rules, the audit log and the console are local to your Mac. No
+authorization decision uses a language model.
 
 ### Does it need root or a kernel extension?
 
 No. It uses macOS's built-in sandbox, as your user.
 
-### What isn't enforced yet?
-
-Argument-level rules such as `git push *`, and agents started without
-`agentacl run`, are observed but not blocked. The [guide](docs/guide.md)
-lists every guarantee and limitation.
-
-## Learn more
-
-- [Guide](docs/guide.md): guarantees, commands, policy, limitations
-- [Policy language](docs/policy-model.md)
-- [Threat model](docs/threat-model.md)
-- [macOS enforcement](docs/macos-enforcement.md)
-- [Changelog](CHANGELOG.md) · [Releasing](docs/releasing.md)
-
 ## Contributing
 
-Issues and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
-Report security issues privately ([SECURITY.md](SECURITY.md)).
+Issues, security research and pull requests are welcome: start with
+[CONTRIBUTING.md](CONTRIBUTING.md). Try to break the threat model; if you do,
+please report it privately via [SECURITY.md](SECURITY.md).
+
+More docs: [guide](docs/guide.md) · [policy language](docs/policy-model.md) ·
+[current state](docs/current-state.md) · [changelog](CHANGELOG.md)
 
 Built and maintained by Chaitanya Sistla · [Apache-2.0](LICENSE)
