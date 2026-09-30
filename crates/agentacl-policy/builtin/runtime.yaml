@@ -19,6 +19,8 @@ filesystem:
     - "/Library/Frameworks/**"
     - "/Library/Developer/CommandLineTools/**"
     - "/Applications/Xcode.app/**"
+    # Versioned installs (Xcode_16.2.app, Xcode-beta.app) chosen with xcode-select.
+    - "/Applications/Xcode*.app/**"
     - "/opt/homebrew/bin/**"
     - "/opt/homebrew/sbin/**"
     - "/opt/homebrew/lib/**"
@@ -37,6 +39,9 @@ filesystem:
     - "/private/etc/**"
     - "/private/var/db/timezone/**"
     - "/private/var/select/**"
+    # The xcode-select shims (/usr/bin/git, clang, make) resolve the active
+    # developer directory through this symlink; without it they fail.
+    - "/private/var/db/xcode_select_link"
     - "/dev/random"
     - "/dev/urandom"
     - "/dev/zero"
