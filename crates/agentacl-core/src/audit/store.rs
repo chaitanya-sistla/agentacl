@@ -128,6 +128,11 @@ fn row_event(r: &Row) -> rusqlite::Result<(i64, Event)> {
 }
 
 /// Seconds since the epoch of an RFC 3339 UTC timestamp we wrote.
+/// A `json_group_array` result without nulls or empty strings.
+fn json_list(s: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<Option<String>>>(s).unwrap_or_default().into_iter().flatten().filter(|x| !x.is_empty()).collect()
+}
+
 pub fn parse_ts(s: &str) -> Option<i64> {
     let (y, m, d) = (s.get(0..4)?.parse::<i64>().ok()?, s.get(5..7)?.parse::<i64>().ok()?, s.get(8..10)?.parse::<i64>().ok()?);
     let (hh, mm, ss) = (s.get(11..13)?.parse::<i64>().ok()?, s.get(14..16)?.parse::<i64>().ok()?, s.get(17..19)?.parse::<i64>().ok()?);
@@ -447,6 +452,119 @@ impl Store {
         let rows = st
             .query_map(params![since, limit as i64], |r| {
                 Ok(serde_json::json!({ "resource": r.get::<_, String>(0)?, "action": r.get::<_, String>(1)?, "policy": r.get::<_, Option<String>>(2)?, "rule_id": r.get::<_, Option<String>>(3)?, "count": r.get::<_, i64>(4)? }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Network connections per `host:port` since `since` (most recent 1000):
+    /// allowed/blocked totals, first/last seen, agents and projects, plus the
+    /// latest decision.
+    pub fn network_activity(&self, since: &str) -> Result<Vec<serde_json::Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT g.resource, g.allowed, g.blocked, g.first_ts, g.last_ts, g.agents, g.projects,
+                    json_array(l.decision, l.policy, l.rule_id, l.reason)
+             FROM (SELECT e.resource AS resource,
+                          SUM(CASE WHEN e.decision = 'allow' THEN e.count ELSE 0 END) AS allowed,
+                          SUM(CASE WHEN e.decision IN ('deny','ask') AND e.enforcement = 'enforced' THEN e.count ELSE 0 END) AS blocked,
+                          MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts,
+                          json_group_array(DISTINCT e.agent) AS agents,
+                          json_group_array(DISTINCT s.project) AS projects,
+                          MAX(e.rowid) AS last_rowid
+                   FROM events e LEFT JOIN sessions s ON s.session_id = e.session_id
+                   WHERE e.action = 'network.connect' AND e.ts >= ?1
+                   GROUP BY e.resource ORDER BY MAX(e.ts) DESC LIMIT 1000) g
+             JOIN events l ON l.rowid = g.last_rowid
+             ORDER BY g.last_ts DESC",
+        )?;
+        let rows = st
+            .query_map(params![since], |r| {
+                let last: Vec<serde_json::Value> = serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or_default();
+                let at = |i: usize| last.get(i).cloned().unwrap_or(serde_json::Value::Null);
+                Ok(serde_json::json!({
+                    "resource": r.get::<_, String>(0)?,
+                    "allowed": r.get::<_, i64>(1)?,
+                    "blocked": r.get::<_, i64>(2)?,
+                    "first_seen": r.get::<_, String>(3)?,
+                    "last_seen": r.get::<_, String>(4)?,
+                    "agents": json_list(&r.get::<_, String>(5)?),
+                    "projects": json_list(&r.get::<_, String>(6)?),
+                    "last": { "decision": at(0), "policy": at(1), "rule_id": at(2), "reason": at(3) },
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Per hour for the last 24 h (oldest first): allowed and blocked counts.
+    pub fn hourly_split(&self, now_secs: i64) -> Result<Vec<(i64, i64)>> {
+        let mut out = vec![(0i64, 0i64); 24];
+        let since = super::event::format_rfc3339(now_secs - 24 * 3600, 0);
+        // Aggregated per UTC hour in SQL ("YYYY-MM-DDTHH").
+        let mut st = self.conn.prepare(
+            "SELECT substr(ts, 1, 13),
+                    SUM(CASE WHEN decision = 'allow' THEN count ELSE 0 END),
+                    SUM(CASE WHEN decision IN ('deny','ask') AND enforcement = 'enforced' THEN count ELSE 0 END)
+             FROM events WHERE ts >= ?1 AND decision IS NOT NULL GROUP BY 1",
+        )?;
+        let rows = st.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?;
+        for (hour, allowed, blocked) in rows.flatten() {
+            let Some(t) = parse_ts(&format!("{hour}:00:00.000Z")) else { continue };
+            let age_h = (now_secs - t) / 3600;
+            if (0..24).contains(&age_h) {
+                let b = &mut out[23 - age_h as usize];
+                b.0 += allowed;
+                b.1 += blocked;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Enforced denials since `since`, one row per (action, resource), newest
+    /// first; policy, rule and reason are those of the latest event.
+    pub fn blocked_groups(&self, since: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT g.action, g.resource, json_array(l.policy, l.rule_id, l.reason), g.n, g.first_ts, g.last_ts, g.agents, g.projects
+             FROM (SELECT e.action AS action, e.resource AS resource, SUM(e.count) AS n, MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts,
+                          json_group_array(DISTINCT e.agent) AS agents, json_group_array(DISTINCT s.project) AS projects,
+                          MAX(e.rowid) AS last_rowid
+                   FROM events e LEFT JOIN sessions s ON s.session_id = e.session_id
+                   WHERE e.enforcement = 'enforced' AND e.decision IN ('deny','ask') AND e.ts >= ?1
+                   GROUP BY e.action, e.resource ORDER BY MAX(e.ts) DESC LIMIT ?2) g
+             JOIN events l ON l.rowid = g.last_rowid
+             ORDER BY g.last_ts DESC",
+        )?;
+        let rows = st
+            .query_map(params![since, limit as i64], |r| {
+                let last: Vec<serde_json::Value> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
+                let at = |i: usize| last.get(i).cloned().unwrap_or(serde_json::Value::Null);
+                Ok(serde_json::json!({
+                    "action": r.get::<_, String>(0)?,
+                    "resource": r.get::<_, String>(1)?,
+                    "policy": at(0),
+                    "rule_id": at(1),
+                    "reason": at(2),
+                    "count": r.get::<_, i64>(3)?,
+                    "first_seen": r.get::<_, String>(4)?,
+                    "last_seen": r.get::<_, String>(5)?,
+                    "agents": json_list(&r.get::<_, String>(6)?),
+                    "projects": json_list(&r.get::<_, String>(7)?),
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Enforced denials since `since` by action and deciding policy.
+    pub fn blocked_breakdown(&self, since: &str) -> Result<Vec<serde_json::Value>> {
+        let mut st = self.conn.prepare(
+            "SELECT action, IFNULL(policy,''), IFNULL(rule_id,''), SUM(count) FROM events
+             WHERE enforcement = 'enforced' AND decision IN ('deny','ask') AND ts >= ?1
+             GROUP BY action, policy, rule_id",
+        )?;
+        let rows = st
+            .query_map(params![since], |r| {
+                Ok(serde_json::json!({ "action": r.get::<_, String>(0)?, "policy": r.get::<_, String>(1)?, "rule_id": r.get::<_, String>(2)?, "count": r.get::<_, i64>(3)? }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)

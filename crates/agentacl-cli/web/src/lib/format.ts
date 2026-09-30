@@ -44,6 +44,11 @@ export function actionLabel(a: string): string {
     'session.restart_requested': 'Restart requested',
     'session.stop_requested': 'Stop requested',
     'ui.code_replay': 'Console link reused',
+    'network.mode': 'Unknown-site setting changed',
+    'network.allowed': 'Site allowed',
+    'network.blocked': 'Site blocked',
+    'network.rule_removed': 'Site rule removed',
+    'network.answered': 'Answered a site request',
   }
   return m[a] ?? a
 }
@@ -54,6 +59,7 @@ export const policyLabel: Record<string, string> = {
   'agentacl-self': 'AgentACL self-protection',
   runtime: 'Agent runtime',
   'seatbelt-baseline': 'macOS sandbox baseline',
+  console: 'Your decision in the console',
   default: 'Starter rules',
   user: 'Your rules',
   project: 'Project rules',
@@ -83,7 +89,8 @@ export function explainRule(policy?: string | null, ruleId?: string | null, effe
   if (policy === 'protect-secrets') return `${groupLabel[ruleId ?? ''] ?? 'Secrets'} are protected`
   if (policy === 'exec-persistence') return 'Could run code outside the sandbox later'
   if (policy === 'agentacl-self') return 'Protects AgentACL itself'
-  if (policy?.startsWith('provider:') && ruleId === 'protected-config' && deny) return 'The agent’s own settings are read-only — changing them could grant it more access'
+  // A provider policy only denies the agent's own settings.
+  if (policy?.startsWith('provider:') && deny) return 'The agent’s own settings are read-only — changing them could grant it more access'
   if (policy?.startsWith('provider:') && !deny) return 'The agent needs this to run'
   if (policy === 'seatbelt-baseline') return 'Blocked by the base macOS sandbox'
   if (ruleId === 'default' && deny) return 'Outside the project and no rule allows it'

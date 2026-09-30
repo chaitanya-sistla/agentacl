@@ -138,7 +138,7 @@ export interface Project {
   saved: boolean
 }
 
-export interface Stats {
+export interface Stats extends StatsExtra {
   counts_24h: { blocked: number; secrets: number; observed: number; allowed: number }
   timeline_24h: number[]
   top_blocked: { resource: string; action: string; policy?: string; rule_id?: string; count: number }[]
@@ -316,4 +316,107 @@ export interface EvalResp {
   rule_id: string
   reason: string
   trace: string[]
+}
+
+// ---- network, approvals, requests ----
+export interface Category {
+  id: 'ai-provider' | 'package-registry' | 'source-hosting' | 'telemetry' | 'docs' | 'cloud' | 'unknown'
+  label: string
+  advice: string
+}
+export type NetMode = 'block' | 'ask'
+/** What a site resolves to right now (machine-wide policy + console rules). */
+export interface SiteDecision {
+  effect: Effect
+  policy?: string
+  rule_id?: string
+  reason: string
+  by: 'you' | 'console' | 'agent' | 'builtin' | 'default' | 'other'
+  /** An Allow from the console would make it reachable. */
+  allowable: boolean
+}
+export interface Site {
+  host: string
+  display: string
+  ports: string[]
+  allowed: number
+  blocked: number
+  first_seen: string | null
+  last_seen: string | null
+  agents: string[]
+  projects: string[]
+  last: { decision: Effect | null; policy: string | null; rule_id: string | null; reason: string | null } | null
+  category: Category
+  policy_rule: '' | 'allow' | 'block'
+  console_rule: '' | 'allow' | 'block'
+  manageable: boolean
+  effective: SiteDecision
+}
+export interface NetworkResp {
+  days: number
+  mode: NetMode
+  sites: Site[]
+  patterns: { pattern: string; effect: 'allow' | 'block' }[]
+}
+export interface Approval {
+  id: string
+  session: string
+  agent: string
+  agent_name: string
+  project: string
+  host: string
+  display: string
+  port: number
+  created: string
+  expires: string
+  category: Category
+}
+export interface ApprovalsResp {
+  approvals: Approval[]
+  requests_new: number
+  mode: NetMode
+}
+export type AnswerKind = 'once' | 'session' | 'always' | 'block' | 'block-always'
+export interface RequestGroup {
+  key: string
+  kind: 'network' | 'file' | 'secret' | 'locked' | 'program' | 'other'
+  target: string
+  display: string
+  actions: string[]
+  samples: string[]
+  count: number
+  first_seen: string
+  last_seen: string
+  agents: string[]
+  projects: string[]
+  policy: string
+  rule_id: string
+  reason: string
+  dismissed: boolean
+  category?: Category
+  manageable?: boolean
+  effective?: SiteDecision
+}
+export interface RequestsResp {
+  days: number
+  /** This page. */
+  requests: RequestGroup[]
+  dismissed: number
+  total: number
+  page: number
+  size: number
+  pages: number
+  /** All visible requests, every kind. */
+  all: number
+  counts: Partial<Record<'network' | 'file' | 'secret' | 'program' | 'other', number>>
+  /** Keys of every undismissed request matching the filter (all pages). */
+  keys: string[]
+}
+export interface StatsExtra {
+  hourly: { allowed: number; blocked: number }[]
+  top_blocked_sites: { host: string; count: number; category: Category }[]
+  top_allowed_sites: { host: string; count: number; category: Category }[]
+  blocked_by_kind: { kind: string; count: number }[]
+  sites_total: number
+  sites_blocked: number
 }

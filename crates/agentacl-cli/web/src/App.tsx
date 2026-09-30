@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { Activity, AlertTriangle, Bot, FolderKanban, LayoutDashboard, Moon, Settings, ShieldCheck, Sun, KeyRound } from 'lucide-react'
-import { bootstrap, get, setUnauthorizedHandler, type Status } from '@/lib/api'
+import { Activity, AlertTriangle, Bot, FolderKanban, Globe, Inbox, LayoutDashboard, Moon, Settings, ShieldCheck, Sun, KeyRound } from 'lucide-react'
+import { bootstrap, get, setUnauthorizedHandler, type ApprovalsResp, type Status } from '@/lib/api'
 import { AppContext } from '@/lib/app-context'
 import { useInterval, useRoute, navigate } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
@@ -16,11 +16,16 @@ import ProjectDetail from '@/pages/ProjectDetail'
 import Policies from '@/pages/Policies'
 import ActivityPage from '@/pages/Activity'
 import SettingsPage from '@/pages/Settings'
+import RequestsPage from '@/pages/Requests'
+import NetworkPage from '@/pages/Network'
+import { ApprovalsDock } from '@/features/approvals'
 
 const NAV = [
   { path: '/', label: 'Overview', icon: LayoutDashboard },
+  { path: '/requests', label: 'Requests', icon: Inbox },
   { path: '/agents', label: 'Agents', icon: Bot },
   { path: '/projects', label: 'Projects', icon: FolderKanban },
+  { path: '/network', label: 'Network', icon: Globe },
   { path: '/policies', label: 'Policies', icon: KeyRound },
   { path: '/activity', label: 'Activity', icon: Activity },
   { path: '/settings', label: 'Settings', icon: Settings },
@@ -55,6 +60,10 @@ export default function App() {
   const refreshStatus = React.useCallback(() => {
     get<Status>('/api/status').then(setStatus).catch(() => {})
   }, [])
+  const [inbox, setInbox] = React.useState<ApprovalsResp | null>(null)
+  const refreshInbox = React.useCallback(() => {
+    get<ApprovalsResp>('/api/approvals').then(setInbox).catch(() => {})
+  }, [])
 
   React.useEffect(() => {
     setUnauthorizedHandler(() => setPhase('signedout'))
@@ -73,6 +82,11 @@ export default function App() {
     })()
   }, [])
   useInterval(refreshStatus, 15000)
+  // Approvals expire in 25 s, so poll often (cheap: a directory listing).
+  useInterval(() => phase === 'ready' && refreshInbox(), 2000)
+  React.useEffect(() => {
+    if (phase === 'ready') refreshInbox()
+  }, [phase, refreshInbox])
 
   if (phase === 'boot') return <Loading label="Connecting to AgentACL…" />
   if (phase === 'signedout' && !status) return <SignedOut message={bootMsg} />
@@ -83,15 +97,17 @@ export default function App() {
   else if (p === '/agents') page = <Agents />
   else if (p === '/projects') page = <Projects />
   else if (p.startsWith('/projects/')) page = <ProjectDetail path={decodeURIComponent(p.slice('/projects/'.length))} tab={route.query.get('tab') ?? 'overview'} />
-  else if (p === '/policies') page = <Policies tab={route.query.get('tab') ?? 'rules'} />
+  else if (p === '/policies') page = <Policies tab={route.query.get('tab') ?? 'rules'} focus={route.query.get('focus')} />
   else if (p === '/activity') page = <ActivityPage query={route.query} />
+  else if (p === '/requests') page = <RequestsPage />
+  else if (p === '/network') page = <NetworkPage />
   else if (p === '/settings') page = <SettingsPage />
   else page = <Dashboard />
 
   const active = (path: string) => (path === '/' ? p === '/' : p === path || p.startsWith(path + '/'))
 
   return (
-    <AppContext.Provider value={{ status, home: status?.home ?? '', agents, refreshStatus, setDirty: nav.setDirty, guard: nav.guard }}>
+    <AppContext.Provider value={{ status, home: status?.home ?? '', agents, refreshStatus, setDirty: nav.setDirty, guard: nav.guard, inbox, refreshInbox }}>
       <TooltipProvider>
         <Toaster>
           <div className="flex min-h-screen">
@@ -117,6 +133,12 @@ export default function App() {
                   >
                     <n.icon className="size-4" />
                     {n.label}
+                    {n.path === '/requests' && (inbox?.approvals.length ?? 0) + (inbox?.requests_new ?? 0) > 0 && (
+                      <span className={cn('ml-auto min-w-5 rounded-full px-1.5 text-center text-[11px] font-semibold tabular-nums', (inbox?.approvals.length ?? 0) > 0 ? 'animate-pulse bg-brand text-white' : 'bg-muted text-muted-foreground')}>
+                        {(inbox?.approvals.length ?? 0) + (inbox?.requests_new ?? 0)}
+                      </span>
+                    )}
+                    {n.path === '/network' && inbox?.mode === 'ask' && <span className="ml-auto rounded bg-brand/15 px-1.5 text-[10px] font-semibold text-brand">ASK</span>}
                   </a>
                 ))}
               </nav>
@@ -168,6 +190,7 @@ export default function App() {
               )}
               <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 md:px-8">{page}</main>
               {nav.dialog}
+              <ApprovalsDock />
               {phase === 'signedout' && (
                 // An overlay, so an unsaved draft underneath survives until a new link signs in.
                 <div className="fixed inset-0 z-[90] bg-background/70 backdrop-blur-sm">

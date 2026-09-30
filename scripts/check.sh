@@ -44,7 +44,7 @@ else
 fi
 
 step "Console: typecheck, build, and the committed build is current"
-(cd crates/agentacl-cli/web && npm ci --silent && npm run build --silent)
+(cd crates/agentacl-cli/web && npm ci --no-audit --no-fund && npm run build)
 git diff --exit-code --stat -- crates/agentacl-cli/src/ui/dist || {
   echo "src/ui/dist is stale: commit the rebuilt console" >&2
   exit 1

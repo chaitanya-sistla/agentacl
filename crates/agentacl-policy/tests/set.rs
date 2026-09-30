@@ -118,3 +118,9 @@ fn relative_except_rejected() {
     let y = "version: v1\nfilesystem:\n  deny_read:\n    - path: \"/p/**/.env.*\"\n      except: [\".env.example\"]\n";
     assert!(try_load(vec![user(y)], LoadOptions::default()).is_err());
 }
+
+#[test]
+fn rule_id_default_is_reserved() {
+    let y = "version: v1\nnetwork:\n  deny:\n    - { host: \"x.example.com\", id: default }\n";
+    assert!(try_load(vec![user(y)], LoadOptions::default()).is_err());
+}

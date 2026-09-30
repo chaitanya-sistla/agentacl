@@ -1,19 +1,18 @@
-import { ArrowRight, Bot, FolderKanban, KeyRound, ShieldAlert, ShieldCheck, ShieldX, TriangleAlert } from 'lucide-react'
-import { get, type AgentsResp, type Project, type Stats } from '@/lib/api'
+import { ArrowRight, Bot, Globe, Inbox, KeyRound, ShieldAlert, ShieldCheck, ShieldX, TriangleAlert } from 'lucide-react'
+import { get, type AgentsResp, type Stats } from '@/lib/api'
 import { useData, useInterval, navigate } from '@/lib/hooks'
 import { useApp } from '@/lib/app-context'
 import { actionLabel, baseName, explainRule, policyLabel, sinceUs, tildify } from '@/lib/format'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Tooltip } from '@/components/ui/misc'
-import { Command, Empty, Mono, PageHeader, Stat } from '@/components/app/common'
+import { Command, Empty, PageHeader, Stat } from '@/components/app/common'
+import { BarList, CategoryBadge, Donut, StackedBars } from '@/components/app/charts'
 
 export default function Dashboard() {
-  const { home } = useApp()
+  const { home, inbox } = useApp()
   const stats = useData(() => get<Stats>('/api/stats'))
   const agents = useData(() => get<AgentsResp>('/api/agents'))
-  const projects = useData(() => get<{ projects: Project[] }>('/api/projects'))
   useInterval(() => {
     stats.reload()
     agents.reload()
@@ -23,8 +22,21 @@ export default function Dashboard() {
   const protectedN = running.filter((r) => r.supervised).length
   const unprotected = running.filter((r) => !r.supervised)
   const c = stats.data?.counts_24h
-  const tl = stats.data?.timeline_24h ?? []
-  const max = Math.max(1, ...tl)
+  const hourly = stats.data?.hourly ?? []
+  const hourLabels = hourly.map((_, i) => (i === 23 ? 'now' : `${23 - i}h ago`))
+  // Group blocked files by folder so one noisy cache doesn't fill the list.
+  const files = Object.values(
+    (stats.data?.top_blocked ?? [])
+      .filter((t) => t.action !== 'network.connect')
+      .reduce<Record<string, { resource: string; action: string; policy?: string; rule_id?: string; count: number }>>((m, t) => {
+        const dir = t.resource.replace(/\/[^/]*$/, '') || '/'
+        const cur = m[dir]
+        m[dir] = cur ? { ...cur, count: cur.count + t.count } : { ...t, resource: dir }
+        return m
+      }, {}),
+  )
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6)
 
   return (
     <>
@@ -49,60 +61,88 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Blocked in last 24 h" value={(c?.blocked ?? 0).toLocaleString()} hint="Actions the kernel stopped" icon={ShieldX} tone="danger" onClick={() => navigate('/activity?kind=blocked&since=24h')} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <Stat label="Blocked · 24 h" value={(c?.blocked ?? 0).toLocaleString()} hint="Stopped by the kernel or the proxy" icon={ShieldX} tone="danger" onClick={() => navigate('/activity?kind=blocked&since=24h')} />
         <Stat label="Secret access blocked" value={(c?.secrets ?? 0).toLocaleString()} hint=".env, SSH keys, cloud credentials…" icon={KeyRound} tone="warning" onClick={() => navigate('/activity?kind=blocked&since=24h&policy=protect-secrets')} />
+        <Stat label="Sites blocked · 24 h" value={stats.data?.sites_blocked ?? 0} hint={`${stats.data?.sites_total ?? 0} sites contacted`} icon={Globe} tone="brand" onClick={() => navigate('/network')} />
+        <Stat label="Requests waiting" value={(inbox?.approvals.length ?? 0) + (inbox?.requests_new ?? 0)} hint={(inbox?.approvals.length ?? 0) > 0 ? `${inbox!.approvals.length} need an answer now` : 'New in the last 24 h'} icon={Inbox} tone={(inbox?.approvals.length ?? 0) > 0 ? 'warning' : 'default'} onClick={() => navigate('/requests')} />
         <Stat label="Agents running" value={running.length} hint={`${protectedN} protected · ${running.length - protectedN} unprotected`} icon={Bot} tone={unprotected.length ? 'warning' : 'success'} onClick={() => navigate('/agents')} />
-        <Stat label="Projects" value={projects.data?.projects.length ?? 0} hint="Folders agents work in" icon={FolderKanban} tone="brand" onClick={() => navigate('/projects')} />
       </div>
 
-      <div className="mt-6 grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
         <Card className="xl:col-span-2">
           <CardHeader>
-            <CardTitle>Blocked actions · last 24 hours</CardTitle>
-            <CardDescription>Each bar is one hour. Hover for the count.</CardDescription>
+            <CardTitle>Activity · last 24 hours</CardTitle>
+            <CardDescription>Allowed and blocked actions per hour, across every protected agent.</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex h-40 items-end gap-1">
-              {tl.map((v, i) => (
-                <Tooltip key={i} content={`${v} blocked · ${i === 23 ? 'this hour' : `${23 - i}–${24 - i}h ago`}`}>
-                  <div className="flex h-full flex-1 items-end">
-                    <div className={v ? 'w-full rounded-t-sm bg-red-500/80 transition-colors hover:bg-red-500' : 'w-full rounded-t-sm bg-muted'} style={{ height: `${Math.max(3, (v / max) * 100)}%` }} />
-                  </div>
-                </Tooltip>
-              ))}
-            </div>
-            <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-              <span>24 h ago</span>
-              <span>12 h ago</span>
-              <span>now</span>
-            </div>
+            <StackedBars
+              data={hourly as unknown as Record<string, number>[]}
+              labels={hourLabels}
+              series={[
+                { key: 'blocked', label: 'Blocked', className: 'bg-red-500' },
+                { key: 'allowed', label: 'Allowed', className: 'bg-emerald-500/70' },
+              ]}
+            />
           </CardContent>
         </Card>
-
         <Card>
           <CardHeader>
-            <CardTitle>Most blocked</CardTitle>
-            <CardDescription>What agents keep trying to reach</CardDescription>
+            <CardTitle>What was blocked</CardTitle>
+            <CardDescription>Last 24 hours, by kind</CardDescription>
           </CardHeader>
           <CardContent>
-            {(stats.data?.top_blocked.length ?? 0) === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">Nothing blocked in the last 24 hours.</div>
-            ) : (
-              <ul className="flex flex-col gap-2.5">
-                {stats.data!.top_blocked.map((t, i) => (
-                  <li key={i} className="flex items-center gap-3">
-                    <div className="min-w-0 flex-1">
-                      <Mono className="block truncate">{tildify(t.resource, home)}</Mono>
-                      <div className="text-xs text-muted-foreground">
-                        {actionLabel(t.action)} · {explainRule(t.policy, t.rule_id, 'deny', policyLabel[t.policy ?? ''] ?? t.policy ?? '')}
-                      </div>
-                    </div>
-                    <Badge variant="danger">{t.count}</Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <Donut items={(stats.data?.blocked_by_kind ?? []).map((k) => ({ label: k.kind, value: k.count }))} centerLabel="blocked" empty="Nothing blocked in the last 24 hours." />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <div>
+              <CardTitle>Top blocked sites</CardTitle>
+              <CardDescription>Where agents tried to connect</CardDescription>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/network')}>
+              Network <ArrowRight />
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <BarList
+              barClass="bg-red-500"
+              empty="No site was blocked in the last 24 hours."
+              items={(stats.data?.top_blocked_sites ?? []).map((h) => ({ key: h.host, label: h.host, value: h.count, sub: <CategoryBadge id={h.category.id} label={h.category.label} /> }))}
+              onClick={() => navigate('/network')}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Most used sites</CardTitle>
+            <CardDescription>Allowed connections</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <BarList
+              barClass="bg-emerald-500"
+              empty="No connections in the last 24 hours."
+              items={(stats.data?.top_allowed_sites ?? []).map((h) => ({ key: h.host, label: h.host, value: h.count, sub: <CategoryBadge id={h.category.id} label={h.category.label} /> }))}
+              onClick={() => navigate('/network')}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Most blocked files</CardTitle>
+            <CardDescription>What agents keep trying to open</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <BarList
+              barClass="bg-amber-500"
+              empty="No file was blocked in the last 24 hours."
+              items={files.map((t) => ({ key: t.resource + t.action, label: tildify(t.resource, home), value: t.count, sub: `${actionLabel(t.action)} · ${explainRule(t.policy, t.rule_id, 'deny', policyLabel[t.policy ?? ''] ?? t.policy ?? '')}` }))}
+              onClick={() => navigate('/requests')}
+            />
           </CardContent>
         </Card>
       </div>

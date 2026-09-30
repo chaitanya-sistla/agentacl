@@ -21,7 +21,7 @@ function explain(d: FsNode['read'], verb: string): string {
   return `Can’t ${verb} — ${why}`
 }
 
-export function AccessMap({ draft, scope, agent, onEditRules }: { draft: PolicyDraft; scope: Scope; agent: string; onEditRules: () => void }) {
+export function AccessMap({ draft, scope, agent, focus, onEditRules }: { draft: PolicyDraft; scope: Scope; agent: string; focus?: string; onEditRules: () => void }) {
   const { home, agents } = useApp()
   const agentName = agents.find((a) => a.id === agent)?.name ?? agent
   const [view, setView] = React.useState<'graph' | 'list'>(() => {
@@ -44,6 +44,14 @@ export function AccessMap({ draft, scope, agent, onEditRules }: { draft: PolicyD
   const [loading, setLoading] = React.useState<Set<string>>(new Set())
   const [sel, setSel] = React.useState<FsNode | null>(null)
   const [err, setErr] = React.useState<string | null>(null)
+  // Deep link (e.g. from Requests): select that path once.
+  React.useEffect(() => {
+    if (!focus) return
+    post<FsNode>('/api/fs/node', { ...draft.draftBody(), path: focus })
+      .then(setSel)
+      .catch((e) => setErr(e.message))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus])
   const openRef = React.useRef(open)
   openRef.current = open
   // Responses for an older draft must not overwrite newer ones.

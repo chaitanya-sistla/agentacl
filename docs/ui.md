@@ -313,6 +313,95 @@ relaunch **while the agent is still running**:
   `restart.refused` warning event with the error, and the UI shows it.
 - Only if `prepare` succeeds does it stop the agent and relaunch.
 
+### 4.8 Network decisions, approvals and requests
+
+The proxy sits in the path of every agent connection, so network decisions can
+change while an agent runs, which file decisions can't (a Seatbelt profile is
+fixed at launch). `agentacl_core::netlive` carries them from the console to
+every supervisor through two locations in `${AGENTACL_STATE}`. Agents can't
+write there (`agentacl-self`). The supervisor reads them; the console writes
+them.
+
+- **`network-live.json`**: `{mode, rules}`.
+  - `mode` is `block` (the default) or `ask`. It applies to sites that only
+    the *default* decision refuses.
+  - `rules` are per-host allow/block decisions made in the console.
+- **How a host decision is made** (`LiveNetDecider`, before any DNS lookup):
+  1. A console **block** refuses at once, in every session. It only
+     restricts.
+  2. If the policy allows the host, it is allowed.
+  3. Otherwise, only a denial from the **default** (`rule_id: "default"`,
+     an id rules can't use) can be lifted. Explicit and built-in denials
+     always stand.
+  4. It is lifted by one of:
+     - a session-scoped approval (for that `host:port` only);
+     - a console **allow** made *after* the session started. Sessions started
+       later load the same rule from the policy file, so deleting it there
+       removes it everywhere.
+  5. With `mode: ask` (or an `ask` default), the connection waits for the
+     human.
+
+  IP literals and `localhost` are never lifted (address rules govern them),
+  and the address phase runs unchanged after a host is allowed.
+
+  A prompt is raised **before** any DNS lookup, as every host decision is.
+  Resolving first would send names the agent invents to DNS before the human
+  decides, which is a data exfiltration channel. So an approved name that
+  resolves to a private or local address is still refused, and the console
+  says so.
+- **Approvals** (`approvals/<id>.json`, answer `<id>.answer`):
+  - The proxy queues one prompt per `host:port`. Limits: at most 8 prompts
+    per session; at most 16 connections waiting per site and 64 per session.
+    Anything beyond those is refused at once.
+  - The proxy posts a macOS notification at most every 8 s.
+  - Every connection waiting on a prompt shares its deadline (25 s). No answer
+    means blocked. An expired or already-answered prompt can't be answered.
+  - Answers:
+    - **once**: the connections waiting now;
+    - **session**: this `host:port` for the rest of the session;
+    - **always**: the console also saves an allow rule for the host, any
+      port;
+    - **block**;
+    - **block-always**: also saves a block rule.
+  - The notification text is passed to `osascript` as an argument, never as
+    script source, so a hostile host name can't inject AppleScript.
+  - Host names the console acts on must be plain names
+    (`[a-z0-9.-_]`, ≤ 253 characters).
+- **Site rules from the console** (Network page, Requests, approvals) are
+  saved twice:
+  - to `network.allow` / `network.deny` in the user policy, through the same
+    validated, conflict-checked save as the editor (durable and reviewable);
+  - to `network-live.json`, which applies them to running sessions.
+
+  Every user-policy save (from the editor too) reconciles the live file:
+  - A live rule the policy no longer has is dropped.
+  - An **allow removed** from the policy is recorded as a revocation
+    (`revoked: [{host, at}]`), unless another rule still allows the host.
+    Sessions started before it treat the host as not allowed, even though
+    their loaded policy still lists it. The agent's own needs are exempt.
+  - A **block removed** from the policy stays in force for sessions started
+    while it existed, until they restart: explicit denials are never lifted
+    live.
+  - If the policy can't be read, the live file is left alone. Each site shows its **effective** decision
+  (machine-wide policy plus live rules). **Allow** is offered only when it
+  would work: the site is blocked by the default, or by your own block.
+- **Requests** (`/api/requests`): enforced denials grouped into decisions.
+  - Grouping: network by host; secrets by protection group; protected
+    settings (`exec-persistence`, `agentacl-self`, provider denials) by
+    folder; programs by executable; other files by folder, at most three
+    levels below home or `/`.
+  - Each group has a count, first and last seen, agents, projects and up to
+    five samples.
+  - **Dismiss** records the time in `ui-dismissed.json`. A group comes back
+    when it happens again.
+
+Endpoints: `GET /api/network?days`, `POST /api/network/rule {host, effect:
+allow|block|none}`, `POST /api/network/mode {mode}`, `GET /api/approvals`
+(pending approvals, new requests, mode), `POST /api/approvals/answer {id,
+answer}`, `GET /api/requests?days&dismissed`, `POST /api/requests/dismiss
+{key | keys, undo?}`. `GET /api/stats` also returns hourly allowed/blocked
+counts, top blocked and most used sites, and blocks by kind.
+
 ## 5. Security
 
 | Threat | Control |
@@ -327,6 +416,9 @@ relaunch **while the agent is still running**:
 | Clickjacking | `frame-ancestors 'none'` |
 | The UI grants more than the CLI can | Same sources and dry-run as `run`. Built-ins are never in writable files. Project scope is restrict-only. Trust is bound to path + sha and has a CLI equivalent |
 | A save breaks a running session on relaunch | Dry-run before restart (§4.7) |
+| An agent approves its own connections | Approvals and live rules live in the state directory, which agents can't write (`agentacl-self`). The answer comes only from the authenticated console |
+| An agent floods the human with prompts | One prompt per host, at most 8 waiting per session, a notification at most every 8 s. Unanswered means blocked |
+| A console allow widens past policy | It lifts only a *default* denial, never an explicit or built-in one, and never for IP literals or localhost; address checks still run |
 
 ## 6. Audit vocabulary
 
@@ -335,6 +427,9 @@ and `session: ui_<ulid>` (the UI process's own id; it has no sessions row):
 
 - `policy.saved`
 - `session.restart_requested`
+- `session.stop_requested`
+- `network.allowed`, `network.blocked`, `network.rule_removed`, `network.mode`
+- `network.answered`
 - `ui.code_replay`
 
 The supervisor records `policy.inputs` at every session start (implemented),

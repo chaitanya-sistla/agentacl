@@ -9,6 +9,8 @@ pub mod enforce;
 pub mod escape;
 pub mod fsafe;
 pub mod identity;
+pub mod netcat;
+pub mod netlive;
 pub mod netproxy;
 pub mod observe;
 pub mod proc;

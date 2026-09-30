@@ -10,6 +10,7 @@
 
 mod api;
 mod files;
+mod network;
 
 use agentacl_core::audit::{EventContext, Store};
 use agentacl_core::config::Paths;

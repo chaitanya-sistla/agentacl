@@ -40,6 +40,13 @@ pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, S
         (Method::Post, "/api/pick-folder") => pick_folder(body),
         (Method::Post, "/api/fs/node") => fs_node(st, body),
         (Method::Post, "/api/evaluate") => evaluate(st, body),
+        (Method::Get, "/api/network") => super::network::network(st, q),
+        (Method::Post, "/api/network/rule") => super::network::network_rule(st, body),
+        (Method::Post, "/api/network/mode") => super::network::network_mode(st, body),
+        (Method::Get, "/api/approvals") => super::network::approvals(st),
+        (Method::Post, "/api/approvals/answer") => super::network::approval_answer(st, body),
+        (Method::Get, "/api/requests") => super::network::requests(st, q),
+        (Method::Post, "/api/requests/dismiss") => super::network::request_dismiss(st, body),
         _ => Ok((404, json!({ "error": "not found" }))),
     }
 }
@@ -65,6 +72,12 @@ fn project_of(v: Option<&str>) -> Result<PathBuf> {
         Some(p) => identity::resolve_project(Path::new(p), None, &home()?),
         None => Ok(PathBuf::from(NO_PROJECT)),
     }
+}
+
+/// A new user policy starts from the built-in default, renamed so the saved
+/// file reads as the user's own rules.
+pub fn seed_user_policy() -> String {
+    agentacl_policy::set::builtin_sources(true).into_iter().find(|s| s.name == "default").map(|s| s.yaml.replacen("\nname: default\n", "\nname: user\n", 1)).unwrap_or_default()
 }
 
 pub const NO_PROJECT: &str = "/private/var/empty";
@@ -261,16 +274,20 @@ fn project_remove(st: &Arc<UiState>, body: &Value) -> Reply {
 
 /// Dashboard numbers: 24 h counts, hourly blocked timeline, top blocked.
 fn stats(st: &Arc<UiState>) -> Reply {
-    let store = st.store.lock().unwrap();
     let since = since_24h();
-    Ok((
-        200,
+    let mut v = {
+        let store = st.store.lock().unwrap();
         json!({
             "counts_24h": store.counts_since(&since)?,
             "timeline_24h": store.blocked_timeline(now_secs())?,
             "top_blocked": store.top_blocked(&since, 8)?.into_iter().map(|mut v| { v["resource"] = json!(term_safe(v["resource"].as_str().unwrap_or_default())); v }).collect::<Vec<_>>(),
-        }),
-    ))
+        })
+    };
+    let extra = super::network::stats_extra(st, now_secs(), &since)?;
+    for (k, x) in extra.as_object().into_iter().flatten() {
+        v[k] = x.clone();
+    }
+    Ok((200, v))
 }
 
 /// Built-in protections, grouped, in plain words.
@@ -450,9 +467,7 @@ fn get_policy(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
         (Some(b), _) => String::from_utf8_lossy(b).into_owned(),
         // Seed a new user policy from the built-in default (policy-model §3).
         // Renamed so the saved file reads as the user's own rules, not the built-in.
-        (None, Scope::User) => {
-            agentacl_policy::set::builtin_sources(true).into_iter().find(|s| s.name == "default").map(|s| s.yaml.replacen("\nname: default\n", "\nname: user\n", 1)).unwrap_or_default()
-        }
+        (None, Scope::User) => seed_user_policy(),
         (None, Scope::Project) => "version: v1\n".to_string(),
     };
     let check = draft::check(&st.paths, &agent, &project, scope, bytes.as_ref().map(|_| yaml.as_str()));
@@ -595,6 +610,7 @@ fn save(st: &Arc<UiState>, body: &Value) -> Reply {
     let base = body["base_sha256"].as_str();
     let confirm = body["confirm"].as_array().is_some_and(|c| c.iter().any(|x| x == "project-unreadable"));
     let file = draft::policy_file(&st.paths, scope, &project);
+    let before_hosts = if scope == Scope::User { super::network::policy_hosts(st).ok() } else { None };
     if scope == Scope::User && !confirm {
         let elsewhere = unreadable_elsewhere(st, &yaml);
         if !elsewhere.is_empty() {
@@ -607,6 +623,10 @@ fn save(st: &Arc<UiState>, body: &Value) -> Reply {
     match draft::save(&st.paths, &agent, &project, scope, &yaml, base, confirm) {
         Ok(sha) => {
             st.store.lock().unwrap().record_ui(&st.ctx, "policy.saved", &file.to_string_lossy(), &format!("{} -> {sha}", base.unwrap_or("absent")))?;
+            if scope == Scope::User {
+                // Keep running sessions' live site rules in line with the file.
+                super::network::reconcile_live(st, before_hosts.as_ref())?;
+            }
             // Sessions that loaded this file, plus sessions that didn't record
             // their inputs (older AgentACL), which may have.
             let affected: Vec<Value> = session_list(st)?

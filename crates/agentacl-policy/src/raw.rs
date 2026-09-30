@@ -178,6 +178,10 @@ fn convert(source: &str, section: &str, want: RuleKind, items: Vec<RuleRepr>) ->
         if rule.pattern.trim().is_empty() {
             return Err(bad(i, "empty pattern".into()));
         }
+        // "default" names decisions made by `defaults`; a rule can't claim it.
+        if rule.id.as_deref() == Some("default") {
+            return Err(bad(i, "rule id `default` is reserved".into()));
+        }
         out.push(rule);
     }
     Ok(out)

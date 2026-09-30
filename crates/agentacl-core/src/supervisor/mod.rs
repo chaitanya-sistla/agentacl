@@ -278,7 +278,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         backend: backend.name().into(),
         started_at: now_rfc3339(),
         agentacl_version: Some(env!("CARGO_PKG_VERSION").into()),
-        features: vec!["restart".into(), "ui-port-deny".into()],
+        features: vec!["restart".into(), "ui-port-deny".into(), "network-live".into()],
         policy_sources: policy_inputs(paths, opts, &project).into_iter().map(|p| crate::session::PolicyInput { sha256: input_sha(paths, &p), path: p }).collect(),
     };
     let watch = integrity::watch_list(&project, &session.human.home);
@@ -654,7 +654,16 @@ fn run_prepared(paths: &Paths, opts: &RunOptions, p: &Prepared, try_next: &mut d
     });
 
     // Proxy.
-    let decider = Arc::new(crate::netproxy::PolicyNetDecider { policy: p.policy.clone(), subject: p.subject() });
+    // Policy decisions, adjusted live by the console (blocks, approvals).
+    let decider = Arc::new(crate::netlive::LiveNetDecider::new(
+        crate::netproxy::PolicyNetDecider { policy: p.policy.clone(), subject: p.subject() },
+        canon_or(&paths.state_dir),
+        s.session_id.clone(),
+        s.agent.id.clone(),
+        s.agent.display_name.clone(),
+        s.project.to_string_lossy().into_owned(),
+        s.started_at.clone(),
+    ));
     let live_p = live.clone();
     let guard = Arc::new(crate::netproxy::UiPortGuard { state_dir: canon_or(&paths.state_dir) });
     let proxy = crate::netproxy::NetProxy::start_guarded(

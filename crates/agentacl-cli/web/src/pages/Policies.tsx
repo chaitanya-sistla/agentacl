@@ -10,7 +10,7 @@ import { useDiscardGuard } from '@/features/guard'
 
 const KEY = 'af-context-project'
 
-export default function Policies({ tab }: { tab: string }) {
+export default function Policies({ tab, focus }: { tab: string; focus?: string | null }) {
   const { home, agents } = useApp()
   const projects = useData(() => get<{ projects: Project[] }>('/api/projects'))
   const [project, setProject] = React.useState<string>(() => {
@@ -46,7 +46,7 @@ export default function Policies({ tab }: { tab: string }) {
 
   // The tab is page state (not a navigation), mirrored into the URL without
   // a hashchange so it never trips the unsaved-changes guard.
-  const [t, setT] = React.useState<EditorTab>((['access', 'rules', 'builtins', 'yaml', 'test'].includes(tab) ? tab : 'access') as EditorTab)
+  const [t, setT] = React.useState<EditorTab>(focus ? 'access' : ((['access', 'rules', 'builtins', 'yaml', 'test'].includes(tab) ? tab : 'access') as EditorTab))
   const onTab = (x: EditorTab) => {
     setT(x)
     history.replaceState(null, '', '#/policies?tab=' + x)
@@ -82,7 +82,7 @@ export default function Policies({ tab }: { tab: string }) {
           </div>
         }
       />
-      <PolicyEditor scope="user" project={project || null} agent={agent} tab={t} onTab={onTab} onDirty={g.onDirty} />
+      <PolicyEditor scope="user" project={project || null} agent={agent} tab={t} onTab={onTab} focus={focus ?? undefined} onDirty={g.onDirty} />
     </>
   )
 }

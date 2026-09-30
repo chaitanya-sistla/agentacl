@@ -17,7 +17,7 @@ import { ruleCount } from './sections'
 
 export type EditorTab = 'access' | 'rules' | 'builtins' | 'yaml' | 'test'
 
-export function PolicyEditor({ scope, project, agent = 'claude-code', tab, onTab, onDirty }: { scope: Scope; project: string | null; agent?: string; tab: EditorTab; onTab: (t: EditorTab) => void; onDirty?: (d: boolean) => void }) {
+export function PolicyEditor({ scope, project, agent = 'claude-code', tab, onTab, onDirty, focus }: { scope: Scope; project: string | null; agent?: string; tab: EditorTab; onTab: (t: EditorTab) => void; onDirty?: (d: boolean) => void; focus?: string }) {
   const draft = usePolicyDraft(scope, project, agent)
   const { home } = useApp()
   const [tabErr, setTabErr] = React.useState<string | null>(null)
@@ -130,7 +130,7 @@ export function PolicyEditor({ scope, project, agent = 'claude-code', tab, onTab
         </TabsList>
         <ErrorText error={tabErr} />
         <TabsContent value="access">
-          <AccessMap draft={draft} scope={scope} agent={agent} onEditRules={() => switchTab('rules')} />
+          <AccessMap draft={draft} scope={scope} agent={agent} focus={focus} onEditRules={() => switchTab('rules')} />
         </TabsContent>
         <TabsContent value="rules">{draft.doc ? <RulesEditor draft={draft} scope={scope} pickerStart={project ?? home} /> : <YamlOnly />}</TabsContent>
         {scope === 'user' && <TabsContent value="builtins">{draft.doc ? <BuiltinProtections draft={draft} /> : <YamlOnly />}</TabsContent>}
