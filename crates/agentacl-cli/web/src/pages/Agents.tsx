@@ -12,7 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tooltip } from '@/components/ui/misc'
 import { Command, Empty, ErrorText, Loading, Mono, PageHeader } from '@/components/app/common'
-import { useSessionActions } from '@/features/session-actions'
+import { RestartBadge, useRestartState, useSessionActions } from '@/features/session-actions'
+import { AgentAccess } from '@/features/agent-access'
 
 const CMD: Record<string, string> = { 'claude-code': 'claude', codex: 'codex', 'gemini-cli': 'gemini', 'copilot-cli': 'copilot', opencode: 'opencode' }
 
@@ -118,16 +119,8 @@ export default function Agents() {
                         <TableCell>
                           {!s ? (
                             <span className="text-sm text-muted-foreground">—</span>
-                          ) : s.stale === true ? (
-                            <Tooltip content="The rules changed after this agent started. Restart it to apply them.">
-                              <Badge variant="warning">
-                                <TriangleAlert /> Restart to apply
-                              </Badge>
-                            </Tooltip>
-                          ) : s.stale === 'unknown' ? (
-                            <Badge variant="outline">Unknown</Badge>
                           ) : (
-                            <Badge variant="secondary">Up to date</Badge>
+                            <SessionRules session={s.session} stale={s.stale} />
                           )}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">{sinceUs(r.started_us)}</TableCell>
@@ -252,6 +245,23 @@ export default function Agents() {
           <p className="text-xs text-muted-foreground">Tip: add a shell alias such as <Mono>alias claude=&quot;agentacl run -- claude&quot;</Mono> so it’s always protected.</p>
         </DialogContent>
       </Dialog>
+      <AgentAccess />
     </>
   )
+}
+
+/** Rules status of a running session; after a restart from here, how it went. */
+function SessionRules({ session, stale }: { session: string; stale: boolean | 'unknown' }) {
+  const r = useRestartState(session)
+  if (r) return <RestartBadge session={session} />
+  if (stale === true)
+    return (
+      <Tooltip content="The rules changed after this agent started. Restart it to apply them.">
+        <Badge variant="warning">
+          <TriangleAlert /> Restart to apply
+        </Badge>
+      </Tooltip>
+    )
+  if (stale === 'unknown') return <Badge variant="outline">Unknown</Badge>
+  return <Badge variant="secondary">Up to date</Badge>
 }

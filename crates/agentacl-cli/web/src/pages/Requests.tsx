@@ -13,6 +13,10 @@ import { useToast } from '@/components/ui/toast'
 import { Empty, ErrorText, Loading, Mono, PageHeader, Pagination } from '@/components/app/common'
 import { CategoryBadge } from '@/components/app/charts'
 import { SiteRuleDialog, type SiteRuleIntent } from '@/features/site-rule'
+import { AccessDialog, type AccessIntent } from '@/features/access-dialog'
+import { WaitingList } from '@/features/approvals'
+import { NotifyControls } from '@/features/notify-controls'
+import { RestartBar } from '@/features/restart-bar'
 import { cn } from '@/lib/utils'
 
 const KIND: Record<RequestGroup['kind'], { icon: React.ElementType; label: string; tone: string }> = {
@@ -65,6 +69,8 @@ export default function RequestsPage() {
   const [kind, setKind] = React.useState<'all' | RequestGroup['kind']>('all')
   const [showDismissed, setShowDismissed] = React.useState(false)
   const [intent, setIntent] = React.useState<SiteRuleIntent | null>(null)
+  const [access, setAccess] = React.useState<AccessIntent | null>(null)
+  const [saved, setSaved] = React.useState(0)
   const [page, setPage] = React.useState(1)
   const [size, setSize] = React.useState(25)
   const d = useData(() => get<RequestsResp>('/api/requests', { days, dismissed: showDismissed ? 1 : 0, kind, page, size }), [days, showDismissed, kind, page, size])
@@ -93,6 +99,8 @@ export default function RequestsPage() {
         title="Requests"
         description="What your agents tried to do and couldn't, grouped into decisions. Allow what a task genuinely needs; keep the rest blocked."
         actions={
+          <div className="flex flex-wrap items-center gap-3">
+          <NotifyControls />
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             From the last
             <NativeSelect value={days} onChange={(e) => reset(setDays)(Number(e.target.value))}>
@@ -101,8 +109,16 @@ export default function RequestsPage() {
               <option value={30}>30 days</option>
             </NativeSelect>
           </label>
+          </div>
         }
       />
+      <RestartBar refresh={saved} />
+      {(inbox?.approvals.length ?? 0) > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-2 text-sm font-semibold">Waiting for you now</h2>
+          <WaitingList />
+        </section>
+      )}
       {inbox?.mode !== 'ask' && (
         <Card className="mb-4 flex flex-col gap-3 border-brand/30 bg-brand/[0.04] p-4 sm:flex-row sm:items-center">
           <Globe className="size-5 shrink-0 text-brand" />
@@ -161,7 +177,7 @@ export default function RequestsPage() {
         <>
           <div className="flex flex-col gap-3">
             {list.map((g) => (
-              <RequestCard key={g.key} g={g} home={home} onDismiss={dismiss} onSite={setIntent} />
+              <RequestCard key={g.key} g={g} home={home} onDismiss={dismiss} onSite={setIntent} onAccess={setAccess} />
             ))}
           </div>
           <Card className="mt-4 overflow-hidden [&>div]:border-t-0">
@@ -170,12 +186,34 @@ export default function RequestsPage() {
         </>
       )}
       <SiteRuleDialog intent={intent} onClose={() => setIntent(null)} onDone={() => { d.reload(); refreshInbox() }} />
+      <AccessDialog
+        intent={access}
+        onClose={() => setAccess(null)}
+        onDone={() => {
+          d.reload()
+          refreshInbox()
+          setSaved((n) => n + 1)
+        }}
+      />
     </>
   )
 }
 
-function RequestCard({ g, home, onDismiss, onSite }: { g: RequestGroup; home: string; onDismiss: (g: RequestGroup, undo?: boolean) => void; onSite: (i: SiteRuleIntent) => void }) {
+function RequestCard({
+  g,
+  home,
+  onDismiss,
+  onSite,
+  onAccess,
+}: {
+  g: RequestGroup
+  home: string
+  onDismiss: (g: RequestGroup, undo?: boolean) => void
+  onSite: (i: SiteRuleIntent) => void
+  onAccess: (i: AccessIntent) => void
+}) {
   const [open, setOpen] = React.useState(false)
+  const { agents } = useApp()
   const K = KIND[g.kind]
   return (
     <Card className={cn('p-4', g.dismissed && 'opacity-60')}>
@@ -193,7 +231,7 @@ function RequestCard({ g, home, onDismiss, onSite }: { g: RequestGroup; home: st
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>Last {timeAgo(g.last_seen)}</span>
             <span>First {timeAgo(g.first_seen)}</span>
-            {g.agents.length > 0 && <span>{g.agents.join(', ')}</span>}
+            {g.agents.length > 0 && <span>{g.agents.map((id) => agents.find((x) => x.id === id)?.name ?? id).join(', ')}</span>}
             {g.projects.length > 0 && <span>in {g.projects.map(baseName).join(', ')}</span>}
           </div>
           {g.samples.length > 0 && g.kind !== 'network' && (
@@ -215,8 +253,17 @@ function RequestCard({ g, home, onDismiss, onSite }: { g: RequestGroup; home: st
           {g.kind === 'network' && g.manageable && (
             <>
               {g.effective?.allowable ? (
-                <Button size="sm" variant="brand" onClick={() => onSite({ host: g.target, effect: 'allow', category: g.category, wasBlockedByYou: g.effective?.by === 'you' })}>
-                  <Check /> Allow site
+                <Button
+                  size="sm"
+                  variant="brand"
+                  onClick={() =>
+                    // Your own block is replaced in your rules; otherwise pick who and where.
+                    g.effective?.by === 'you'
+                      ? onSite({ host: g.target, effect: 'allow', category: g.category, wasBlockedByYou: true })
+                      : onAccess({ kind: 'site', target: g.target, agents: g.agents, projects: g.projects, category: g.category })
+                  }
+                >
+                  <Check /> Allow…
                 </Button>
               ) : (
                 <span className="self-center text-xs text-muted-foreground">{g.effective?.effect === 'allow' ? 'Allowed now' : `Blocked by ${g.effective?.by === 'builtin' ? 'a built-in rule' : 'a rule'}`}</span>
@@ -227,9 +274,14 @@ function RequestCard({ g, home, onDismiss, onSite }: { g: RequestGroup; home: st
             </>
           )}
           {g.kind === 'file' && (
-            <Button size="sm" variant="outline" onClick={() => navigate('/policies?focus=' + encodeURIComponent(g.target))}>
-              <FolderSearch /> Review in access map
-            </Button>
+            <>
+              <Button size="sm" variant="brand" onClick={() => onAccess({ kind: 'file', target: g.target, agents: g.agents, projects: g.projects, write: g.actions.some((a) => a !== 'filesystem.read') })}>
+                <Check /> Allow…
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => navigate('/policies?focus=' + encodeURIComponent(g.target))}>
+                <FolderSearch /> Access map
+              </Button>
+            </>
           )}
           {g.kind === 'secret' && (
             <Button size="sm" variant="outline" onClick={() => navigate('/policies?tab=builtins')}>

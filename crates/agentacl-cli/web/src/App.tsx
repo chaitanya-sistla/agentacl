@@ -190,7 +190,7 @@ export default function App() {
               )}
               <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-8 md:px-8">{page}</main>
               {nav.dialog}
-              <ApprovalsDock />
+              <ApprovalsDock hidden={p === "/requests"} />
               {phase === 'signedout' && (
                 // An overlay, so an unsaved draft underneath survives until a new link signs in.
                 <div className="fixed inset-0 z-[90] bg-background/70 backdrop-blur-sm">

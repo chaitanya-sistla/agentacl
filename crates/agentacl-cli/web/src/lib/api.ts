@@ -420,3 +420,28 @@ export interface StatsExtra {
   sites_total: number
   sites_blocked: number
 }
+
+export interface AccessRule {
+  section: 'allow_read' | 'allow_write' | 'network.allow'
+  pattern: string
+  display: string
+}
+export interface AccessEntry {
+  file: string
+  agent: string | null
+  agent_name: string | null
+  project: string | null
+  rules: AccessRule[]
+}
+export interface AccessResp {
+  access: AccessEntry[]
+  /** Access files left out of every session because something is wrong with them. */
+  broken: { file: string; error: string }[]
+  dir: string
+}
+export interface NotifySettings {
+  quiet: boolean
+  quiet_until: string | null
+  wait_secs: number
+  wait_choices: number[]
+}

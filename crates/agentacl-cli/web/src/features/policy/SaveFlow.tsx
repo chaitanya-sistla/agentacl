@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Alert } from '@/components/ui/misc'
 import { useToast } from '@/components/ui/toast'
 import { ErrorText, Mono } from '@/components/app/common'
-import { useSessionActions } from '@/features/session-actions'
+import { RestartBadge, useSessionActions } from '@/features/session-actions'
 import type { PolicyDraft } from './draft'
 
 const SECTION_WORDS: Record<string, [string, string]> = {
@@ -322,7 +322,7 @@ export function SaveBar({ draft, onSaved }: { draft: PolicyDraft; onSaved?: () =
                           </div>
                         </div>
                         {restarted.has(s.session) ? (
-                          <Badge variant="success">Restarting</Badge>
+                          <RestartBadge session={s.session} />
                         ) : s.restartable ? (
                           <Button size="sm" variant="outline" disabled={actions.busy === s.session} onClick={() => restartOne(s)}>
                             <RotateCw /> Restart
