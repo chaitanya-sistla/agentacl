@@ -78,6 +78,7 @@ jobs:
         run: |
           sudo apt-get install -y shellcheck >/dev/null
           shellcheck scripts/*.sh .githooks/*
+          shellcheck -x -e SC1091 scripts/demo/*.sh
       - name: Workflow lint
         run: |
           bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
