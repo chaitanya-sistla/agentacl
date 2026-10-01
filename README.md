@@ -41,7 +41,7 @@ where the agent can't change it.
 ## Quick start
 
 ```sh
-V=0.3.0
+V=0.3.1
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing     # must print: OK
@@ -59,6 +59,18 @@ From source: `cargo install --locked --git https://github.com/chaitanya-sistla/a
 
 To always start an agent protected: `alias claude="agentacl run -- claude"`.
 
+**Claude Code: use a token, not `/login`.** A `/login` login lives in the
+macOS keychain, so AgentACL has to let the session reach the keychain, and
+from there it can pull other saved credentials (see
+[Limitations](#limitations)). With a token, the session gets no keychain
+access at all:
+
+```sh
+claude setup-token                          # once; prints a long-lived token
+export CLAUDE_CODE_OAUTH_TOKEN=<the token>  # e.g. in ~/.zshrc
+agentacl run -- claude
+```
+
 ## What gets protected by default
 
 - `.env` files (anywhere), `~/.ssh`, AWS, GCP, Azure and Kubernetes credentials
@@ -72,6 +84,11 @@ To always start an agent protected: `alias claude="agentacl run -- claude"`.
 - secret environment variables (`*_TOKEN`, `AWS_*`, …), which are withheld
 - all network egress except through AgentACL's proxy, which blocks sites no
   rule allows
+- other apps' data reached *through* system services that run outside the
+  sandbox (a "confused deputy"): another app's preferences, the live system
+  log, other processes' shared memory, launchd jobs, Apple Events and the
+  clipboard are all refused, each tested against a control that works
+  outside the sandbox
 
 Your project stays readable and writable. Change the rules in the console
 (`agentacl ui`) or in `~/.config/agentacl/policy.yaml`.
@@ -85,6 +102,8 @@ Short version:
 - **Partly enforced**: planting code. Writing hooks, configs and caches in
   place is blocked, but a folder built elsewhere and moved into the project
   is not checked. Build files are flagged, not blocked.
+- **Not protected**: keychain items, for Claude Code logged in with
+  `/login` (use a token instead, see Quick start).
 - **Observed, not blocked**:
   - agents started without `agentacl run`;
   - argument-level rules like `git push *`.
@@ -131,8 +150,10 @@ the machine.
 
 With Network set to *Ask me*, an agent reaching a new site waits while you
 allow or block it (30 seconds by default, up to 5 minutes, plus "+1 min").
-Files can't wait: the kernel refuses them at once. They show up as requests
-you can allow for one agent and one project, then apply with a restart (the
+Files can't wait: the kernel refuses them at once. They show up as requests:
+**Allow…** grants exactly the files that were refused (not the whole folder,
+unless you choose it), for one agent and one project, and applies with a
+restart (the
 conversation resumes). Notifications come at most once a minute, as a
 digest, and can be silenced.
 
@@ -183,9 +204,14 @@ enforcement is by the sandbox, not by the chain.
 - Seatbelt (`sandbox-exec`) is deprecated by Apple, though still shipped and
   widely used.
 - Data sent to a site you allowed isn't inspected.
-- Claude Code keeps its login in the macOS keychain, so its launch profile
-  can reach the keychain service; items stay protected by their own access
-  rules. Use `ANTHROPIC_API_KEY` to avoid this.
+- **Keychain, for Claude Code logged in with `/login`.** Claude keeps that
+  login in the macOS keychain, so the session can reach the keychain. It can
+  then also run the credential helpers other items trust: git's returns
+  saved GitHub tokens without asking (verified with
+  `scripts/probes/keychain-deputy.sh`). It can also read the encrypted
+  keychain database file. To close this, set `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`) or `ANTHROPIC_API_KEY` in the shell you run
+  `agentacl run` from: the session then gets no keychain access at all.
 - Tested on macOS 14 and 15 on Apple Silicon. Intel binaries are built but
   not run in CI.
 - Binaries are not yet notarized; macOS may warn on first run.
@@ -208,6 +234,16 @@ Full list: [security-guarantees.md](docs/security-guarantees.md) and the
 
 Start it with `agentacl run -- claude`. `.env` files are blocked by default,
 anywhere, for Claude Code and every command it runs.
+
+### Can an agent ask another app to do what the sandbox won't let it?
+
+That's a "confused deputy", and it's the main way sandboxes leak. Every
+system service a session can reach was probed for real: reading another
+app's preferences, streaming the system log, reading other processes'
+shared memory, scheduling a launchd job, scripting other apps and using the
+clipboard are all refused, and each has a regression test. The one open
+case is the keychain for Claude Code's `/login` (see Limitations). Found
+another? Please report it privately via [SECURITY.md](SECURITY.md).
 
 ### Does it send anything to the cloud?
 

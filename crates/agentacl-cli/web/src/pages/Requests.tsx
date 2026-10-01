@@ -275,7 +275,7 @@ function RequestCard({
           )}
           {g.kind === 'file' && (
             <>
-              <Button size="sm" variant="brand" onClick={() => onAccess({ kind: 'file', target: g.target, agents: g.agents, projects: g.projects, write: g.actions.some((a) => a !== 'filesystem.read') })}>
+              <Button size="sm" variant="brand" onClick={() => onAccess({ kind: 'file', target: g.target, files: g.paths ?? [], truncated: g.paths_truncated, agents: g.agents, projects: g.projects, write: g.actions.some((a) => a !== 'filesystem.read') })}>
                 <Check /> Allow…
               </Button>
               <Button size="sm" variant="outline" onClick={() => navigate('/policies?focus=' + encodeURIComponent(g.target))}>

@@ -373,6 +373,60 @@ fn sandbox_access_grant_is_per_agent() {
     assert!(c != 0 && o.contains("Operation not permitted"), "not granted to Codex: {c} {o}");
 }
 
+/// Confused deputies: unsandboxed services that would act for the agent.
+/// Services the sandbox can't reach (Apple Events, launch services, the
+/// clipboard, Spotlight, the log stream) are proven by sandbox_mach_services,
+/// another app's preferences by e2e::preferences_of_other_apps_are_refused.
+/// Here: a launchd job, whose effect is visible.
+#[test]
+fn sandbox_refuses_confused_deputies() {
+    let f = Fixture::new();
+    let p = f.profile(&f.policy(None), input());
+    let label = format!("com.agentacl.test.{}", ulid::Ulid::new().to_string().to_lowercase());
+    let marker = f.root.join("deputy-marker");
+    // Positive control: unsandboxed, the same submit runs a job.
+    let control = f.root.join("control-marker");
+    let control_label = format!("{label}.control");
+    assert!(Command::new("/bin/launchctl").args(["submit", "-l", &control_label, "--", "/usr/bin/touch"]).arg(&control).status().unwrap().success());
+    let t0 = std::time::Instant::now();
+    while !control.exists() && t0.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = Command::new("/bin/launchctl").args(["remove", &control_label]).status();
+    assert!(control.exists(), "positive control: launchd ran the unsandboxed job");
+    let (_, o) = f.run(&p, &format!("/bin/launchctl submit -l {label} -- /usr/bin/touch {}; echo launchctl=$?", marker.display()));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = Command::new("/bin/launchctl").args(["remove", &label]).status();
+    assert!(o.contains("launchctl=") && !o.contains("launchctl=0"), "launchctl submit succeeded: {o}");
+    assert!(!marker.exists(), "a launchd job ran outside the sandbox");
+}
+
+/// POSIX shared memory is one namespace per user: the agent must not reach
+/// another process's segment by name, yet Python's own segments work.
+#[test]
+fn sandbox_shared_memory_is_scoped() {
+    let f = Fixture::new();
+    let p = f.profile(&f.policy(None), input());
+    let name = format!("agentacl_t{}", std::process::id());
+    let hold = format!("import time\nfrom multiprocessing import shared_memory as m\ns=m.SharedMemory(name='{name}',create=True,size=64)\ns.buf[:10]=b'SHM-CANARY'\nprint('up',flush=True)\ntime.sleep(8)\ns.close();s.unlink()\n");
+    let mut holder = Command::new("/usr/bin/python3").args(["-W", "ignore", "-c", &hold]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(holder.stdout.take().unwrap()), &mut line).unwrap();
+    assert_eq!(line.trim(), "up");
+    let probe = format!(
+        "/usr/bin/python3 -W ignore -c \"from multiprocessing import shared_memory as m\ntry:\n  s=m.SharedMemory(name='{name}'); print('read', bytes(s.buf[:10]).decode()); s.close()\nexcept Exception as e: print('refused', type(e).__name__)\nn=m.SharedMemory(create=True,size=16); n.buf[0]=1; print('own-ok'); n.close(); n.unlink()\""
+    );
+    // Sandboxed first: the unsandboxed control's Python unlinks the segment
+    // when it exits (its resource tracker treats attached segments as its own).
+    let (_, o) = f.run(&p, &probe);
+    let control = Command::new("/bin/sh").args(["-c", &probe]).output().unwrap();
+    let _ = holder.kill();
+    let _ = holder.wait();
+    assert!(String::from_utf8_lossy(&control.stdout).contains("read SHM-CANARY"), "positive control: readable outside the sandbox");
+    assert!(o.contains("refused PermissionError") && !o.contains("SHM-CANARY"), "another process's segment reached: {o}");
+    assert!(o.contains("own-ok"), "Python's own shared memory works: {o}");
+}
+
 #[test]
 fn sandbox_writes_and_exec_persistence() {
     let f = Fixture::new();
@@ -535,6 +589,8 @@ fn sandbox_mach_services() {
     let (c, o) = f.run(&p, &format!("{} com.apple.system.notification_center", helper.display()));
     assert_eq!(c, 0, "positive control: {o}");
     for svc in baseline::MACH_DENY.iter().chain(["com.apple.SecurityServer", "com.apple.dnssd.service"].iter()) {
+        // Each exists outside the sandbox (a misspelled name can't pass vacuously).
+        assert!(Command::new(&helper).arg(svc).status().unwrap().success(), "positive control: {svc} reachable unsandboxed");
         let (c, o) = f.run(&p, &format!("{} {svc}", helper.display()));
         assert_ne!(c, 0, "{svc} reachable: {o}");
     }

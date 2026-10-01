@@ -165,7 +165,8 @@ fn provider_doc(id: &str, reqs: &RuntimeReqs) -> GeneratedDoc {
 /// minus per-session grants).
 pub fn load_policy_for_check(paths: &Paths, agent_id: &str, project: &Path, policy_file: Option<&Path>) -> Result<(PolicySet, RuntimeReqs)> {
     let human = identity::human()?;
-    let reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
+    let mut reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
+    reqs.resolve_keychain(agents::env_set);
     let tmp = darwin_user_temp_dir()?.join("agentacl").join("<session>");
     let vars = Vars {
         home: human.home.to_string_lossy().into(),
@@ -194,7 +195,8 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
     let project = identity::resolve_project(&cwd, opts.project.as_deref(), &human.home)?;
     let (binary, agent) = identify_agent(argv0, opts.agent_id.as_deref())?;
     let provider = agents::provider(&agent.id);
-    let reqs = provider.as_ref().map(|p| p.runtime_requirements()).unwrap_or_default();
+    let mut reqs = provider.as_ref().map(|p| p.runtime_requirements()).unwrap_or_default();
+    reqs.resolve_keychain(agents::env_set);
 
     ensure_private_dir(&paths.state_dir)?;
     ensure_private_dir(&paths.config_dir)?;

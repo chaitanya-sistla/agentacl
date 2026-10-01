@@ -436,7 +436,7 @@ fn inbox_groups(st: &Arc<UiState>, since: &str) -> Result<Vec<Value>> {
         let g = groups.entry(key.clone()).or_insert_with(|| {
             json!({
                 "key": key, "kind": kind, "target": target, "display": term_safe(&target), "actions": [], "samples": [],
-                "count": 0, "first_seen": r["first_seen"], "last_seen": r["last_seen"], "agents": [], "projects": [],
+                "count": 0, "first_seen": r["first_seen"], "last_seen": r["last_seen"], "agents": [], "projects": [], "paths": [],
                 "policy": policy, "rule_id": rule, "reason": term_safe(r["reason"].as_str().unwrap_or_default()),
             })
         });
@@ -458,6 +458,25 @@ fn inbox_groups(st: &Arc<UiState>, since: &str) -> Result<Vec<Value>> {
         if let Some(s) = g["samples"].as_array_mut() {
             if s.len() < 5 {
                 s.push(json!(term_safe(&resource)));
+            }
+        }
+        // The exact paths, raw, for "allow exactly these": who asked, and
+        // whether for a change (bounded; `paths_truncated` says when).
+        if action.starts_with("filesystem.") {
+            let agents: Vec<Value> = r["agents"].as_array().cloned().unwrap_or_default();
+            let write = action != "filesystem.read";
+            let full = g["paths"].as_array().is_some_and(|p| p.len() >= 50);
+            if let Some(p) = g["paths"].as_array_mut() {
+                if let Some(e) = p.iter_mut().find(|e| e["path"] == resource.as_str()) {
+                    let mut set: BTreeSet<String> = e["agents"].as_array().into_iter().flatten().chain(agents.iter()).filter_map(|v| v.as_str().map(str::to_string)).collect();
+                    set.retain(|a| !a.is_empty());
+                    e["agents"] = json!(set);
+                    e["write"] = json!(e["write"].as_bool().unwrap_or(false) || write);
+                } else if !full {
+                    p.push(json!({ "path": resource, "agents": agents, "write": write }));
+                } else {
+                    g["paths_truncated"] = json!(true);
+                }
             }
         }
     }

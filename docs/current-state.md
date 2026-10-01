@@ -1,4 +1,4 @@
-# AgentACL: current state (v0.3.0, 2026-09-30)
+# AgentACL: current state (v0.3.1, 2026-10-01)
 
 An audit of what exists today, written before the next round of work.
 Every "enforced" claim below cites the test that exercises it. Anything
@@ -120,8 +120,11 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
 - **Escapes through other apps (T7).** The Mach allowlist is tested, but no
   end-to-end probe of `osascript` → Terminal `do script` or `open -a` is in the
   suite yet.
-- **Keychain.** For Claude Code, the provider grants keychain file reads and
-  `securityd`, so the agent can use items it already has access to (T9).
+- **Keychain.** For Claude Code logged in with `/login`, the session can
+  reach `securityd`, run the credential helpers items trust (git's returns
+  saved GitHub tokens without asking; verified, T9) and read the encrypted
+  keychain database. With a token in
+  the environment (`claude setup-token`), it gets no keychain access.
 - **Tamper resistance.** The kernel sandbox survives supervisor death, but
   auditing stops. Signalling the supervisor is only partly restricted (T5).
 

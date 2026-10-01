@@ -58,6 +58,42 @@ pub struct RuntimeReqs {
     pub launch_args: Vec<String>,
     /// Arguments appended on `agentacl restart` to resume the conversation.
     pub resume_args: Vec<String>,
+    /// Keychain access the agent needs for its own login, unless one of
+    /// `unless_env` is set (the login then comes from the environment).
+    #[serde(default)]
+    pub keychain: KeychainReqs,
+}
+
+/// The keychain is a confused deputy: Apple's tools can read each other's
+/// items silently (verified with git-credential-osxkeychain items), so a
+/// session that can reach `securityd` can read more than the agent's login
+/// (threat model T9). Granted only when the agent has no other login.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeychainReqs {
+    pub read: Vec<String>,
+    pub mach_services: Vec<String>,
+    pub unix_sockets: Vec<String>,
+    pub unless_env: Vec<String>,
+}
+
+impl RuntimeReqs {
+    /// Folds the keychain grants in, unless `has_env` reports one of the
+    /// variables that replace them. Returns whether the keychain is granted.
+    pub fn resolve_keychain(&mut self, has_env: impl Fn(&str) -> bool) -> bool {
+        let k = std::mem::take(&mut self.keychain);
+        if (k.read.is_empty() && k.mach_services.is_empty()) || k.unless_env.iter().any(|v| has_env(v)) {
+            return false;
+        }
+        self.read.extend(k.read);
+        self.mach_services.extend(k.mach_services);
+        self.unix_sockets.extend(k.unix_sockets);
+        true
+    }
+}
+
+/// A non-empty environment variable of this process.
+pub fn env_set(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
 
 pub trait AgentProvider: Send + Sync {

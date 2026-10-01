@@ -14,10 +14,22 @@ pub const RUNTIME_OPS: &[&str] = &[
     "(allow signal (target same-sandbox))",
     "(allow process-info* (target same-sandbox))",
     "(allow sysctl-read)",
-    "(allow ipc-posix-shm*)",
+    // POSIX shared memory is a same-user namespace: an unscoped allow let an
+    // agent read, change or unlink any segment whose name it knows (another
+    // process's, outside the sandbox; verified). Allowed: Python's own
+    // segments (`psm_<random>`) and, read-only, Apple's system state and
+    // cfprefsd's coordination segment (`apple.cfprefs.<uid>v1`, needed to
+    // read even the global preferences).
+    "(allow ipc-posix-shm* (ipc-posix-name-prefix \"/psm_\") (ipc-posix-name-prefix \"psm_\"))",
+    "(allow ipc-posix-shm-read* (ipc-posix-name-prefix \"apple.shm.\") (ipc-posix-name-prefix \"apple.cfprefs.\"))",
     "(allow ipc-posix-sem)",
     "(allow pseudo-tty)",
-    "(allow user-preference-read)",
+    // Only the global domain (locale, units, and whatever apps store there).
+    // Other domains are read through
+    // cfprefsd, which runs outside the sandbox: allowing them would let an
+    // agent read any app's preferences although their files are denied (a
+    // confused deputy, threat model T7).
+    "(allow user-preference-read (preference-domain \"kCFPreferencesAnyApplication\"))",
     "(allow iokit-open (iokit-user-client-class \"RootDomainUserClient\"))",
     "(allow file-read-metadata (literal \"/\"))",
 ];
@@ -36,7 +48,6 @@ pub const MACH_ALLOW: &[&str] = &[
     "com.apple.cfprefsd.daemon",
     "com.apple.cfprefsd.agent",
     "com.apple.coreservices.quarantine-resolver",
-    "com.apple.diagnosticd",
     "com.apple.analyticsd",
     "com.apple.FSEvents",
     "com.apple.system.opendirectoryd.api",
@@ -45,5 +56,14 @@ pub const MACH_ALLOW: &[&str] = &[
 
 /// Services explicitly denied even if something above would allow them:
 /// they let a sandboxed process make an unsandboxed one act (T6, T7, T9).
-pub const MACH_DENY: &[&str] =
-    &["com.apple.coreservices.launchservicesd", "com.apple.coreservices.appleevents", "com.apple.pasteboard.1", "com.apple.metadata.mds", "com.apple.metadata.mds.legacy", "com.apple.nsurlsessiond"];
+/// `diagnosticd` streams the unified log of every process (a confused deputy:
+/// verified to deliver other apps' messages into the sandbox).
+pub const MACH_DENY: &[&str] = &[
+    "com.apple.coreservices.launchservicesd",
+    "com.apple.coreservices.appleevents",
+    "com.apple.pasteboard.1",
+    "com.apple.metadata.mds",
+    "com.apple.metadata.mds.legacy",
+    "com.apple.nsurlsessiond",
+    "com.apple.diagnosticd",
+];
