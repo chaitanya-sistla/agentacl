@@ -7,6 +7,19 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-01
+
+**Closing the side doors.** A sandbox is only as strong as the services it
+still lets the agent talk to. This release probes every one of them for a
+*confused deputy*, a service outside the sandbox that would act for the
+agent, and closes the four that leaked: other apps' preferences, the live
+system log, other processes' shared memory and, for Claude Code with a
+token, the keychain. It also makes **Allow…** grant exactly the files an
+agent asked for, not the folder around them.
+
+If you use Claude Code with `/login`, read the keychain note below and
+consider switching to a token (`claude setup-token`).
+
 ### Security
 - **Confused deputies.** An agent could read any app's preferences through
   `cfprefsd`, which runs outside the sandbox, although the preference files

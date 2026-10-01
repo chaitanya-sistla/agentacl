@@ -1,4 +1,4 @@
-# AgentACL: current state (v0.3.0, 2026-09-30)
+# AgentACL: current state (v0.3.1, 2026-10-01)
 
 An audit of what exists today, written before the next round of work.
 Every "enforced" claim below cites the test that exercises it. Anything
