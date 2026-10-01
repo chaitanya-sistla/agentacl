@@ -640,3 +640,29 @@ fn access_edge_cases() {
     assert_eq!(t.post(&tok, "/api/access/remove", serde_json::json!({ "file": "all copy.yaml", "broken": true })).0, 200);
     assert!(!t.st.paths.config_dir.join("access/all copy.yaml").exists());
 }
+
+#[test]
+fn exact_file_grants_by_default() {
+    let t = setup();
+    let tok = t.login();
+    let home = agentacl_core::config::user_home().unwrap();
+    let dir = format!("{}/agentacl-test-exact", home.display());
+    let (a, b) = (format!("{dir}/a.txt"), format!("{dir}/b.txt"));
+    let (s, r) = t.post(&tok, "/api/access/allow", serde_json::json!({ "kind": "read", "targets": [a, b], "agent": "claude-code", "for_agent": "claude-code" }));
+    assert_eq!(s, 200, "{r}");
+    let y = std::fs::read_to_string(t.st.paths.config_dir.join("access").join(r["file"].as_str().unwrap())).unwrap();
+    assert!(y.contains(&a) && y.contains(&b) && !y.contains(&format!("{dir}/**")), "exactly the two files: {y}");
+    // One protected path in the list refuses the whole grant (nothing saved).
+    let before = std::fs::read_to_string(t.st.paths.config_dir.join("access").join(r["file"].as_str().unwrap())).unwrap();
+    let c = format!("{dir}/c.txt");
+    let (s, r2) =
+        t.post(&tok, "/api/access/allow", serde_json::json!({ "kind": "read", "targets": [c, format!("{}/.ssh/id_ed25519", home.display())], "agent": "claude-code", "for_agent": "claude-code" }));
+    assert_eq!(s, 400, "{r2}");
+    assert_eq!(std::fs::read_to_string(t.st.paths.config_dir.join("access").join(r["file"].as_str().unwrap())).unwrap(), before);
+    assert_eq!(t.post(&tok, "/api/access/allow", serde_json::json!({ "kind": "read", "targets": [], "for_agent": "claude-code" })).0, 400);
+    assert_eq!(t.post(&tok, "/api/access/allow", serde_json::json!({ "kind": "read", "targets": [format!("{dir}/d.txt"), 123], "for_agent": "claude-code" })).0, 400, "non-strings refuse the grant");
+    for bad in [format!("{dir}/x.txt "), format!(" {dir}/x.txt"), format!("{}/Library/Keychains/login.keychain-db", home.display()), format!("{}/library/keychains/x", home.display())] {
+        let (s, r) = t.post(&tok, "/api/access/allow", serde_json::json!({ "kind": "read", "targets": [bad], "for_agent": "claude-code" }));
+        assert_eq!(s, 400, "{bad:?}: {r}");
+    }
+}

@@ -384,6 +384,9 @@ export interface RequestGroup {
   display: string
   actions: string[]
   samples: string[]
+  /** File requests: the exact paths refused (up to 50), who asked, and whether to change them. */
+  paths?: { path: string; agents: string[]; write: boolean }[]
+  paths_truncated?: boolean
   count: number
   first_seen: string
   last_seen: string

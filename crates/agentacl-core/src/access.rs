@@ -193,6 +193,11 @@ pub fn scan(paths: &Paths) -> Result<(Vec<(String, String, RawDoc)>, Vec<(String
 /// The access document for `scope` with one more rule, as YAML (not written).
 /// Returns `None` if the rule is already there.
 pub fn with_rule(paths: &Paths, scope: &Scope, grant: Grant, pattern: &str) -> Result<Option<(String, String)>> {
+    with_rules(paths, scope, grant, &[pattern.to_string()])
+}
+
+/// As [`with_rule`], for several patterns at once; `None` if all are there.
+pub fn with_rules(paths: &Paths, scope: &Scope, grant: Grant, patterns: &[String]) -> Result<Option<(String, String)>> {
     let name = file_name(scope);
     let (docs, broken) = scan(paths)?;
     if let Some((_, why)) = broken.iter().find(|(n, _)| *n == name) {
@@ -204,20 +209,24 @@ pub fn with_rule(paths: &Paths, scope: &Scope, grant: Grant, pattern: &str) -> R
         None => new_doc(scope)?,
     };
     let kind = if grant == Grant::Site { RuleKind::Host } else { RuleKind::Path };
-    let list = match grant {
-        Grant::Read => &mut doc.filesystem.allow_read,
-        Grant::Write => &mut doc.filesystem.allow_write,
-        Grant::Site => &mut doc.network.allow,
-    };
-    if list.iter().any(|r| r.pattern == pattern) {
-        return Ok(None);
+    let mut changed = false;
+    for pattern in patterns {
+        let list = match grant {
+            Grant::Read => &mut doc.filesystem.allow_read,
+            Grant::Write => &mut doc.filesystem.allow_write,
+            Grant::Site => &mut doc.network.allow,
+        };
+        if !list.iter().any(|r| r.pattern == *pattern) {
+            list.push(RawRule { kind: kind.clone(), pattern: pattern.clone(), except: vec![], id: None, reason: None });
+            changed = true;
+        }
+        // Reading is implied by writing.
+        if grant == Grant::Write && !doc.filesystem.allow_read.iter().any(|r| r.pattern == *pattern) {
+            doc.filesystem.allow_read.push(RawRule { kind: RuleKind::Path, pattern: pattern.clone(), except: vec![], id: None, reason: None });
+            changed = true;
+        }
     }
-    list.push(RawRule { kind, pattern: pattern.into(), except: vec![], id: None, reason: None });
-    // Reading is implied by writing.
-    if grant == Grant::Write && !doc.filesystem.allow_read.iter().any(|r| r.pattern == pattern) {
-        doc.filesystem.allow_read.push(RawRule { kind: RuleKind::Path, pattern: pattern.into(), except: vec![], id: None, reason: None });
-    }
-    Ok(Some((name, to_yaml(&doc))))
+    Ok(changed.then(|| (name, to_yaml(&doc))))
 }
 
 /// The access document `name` without the rule `pattern` in `section`

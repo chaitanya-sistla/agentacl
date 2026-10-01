@@ -112,7 +112,6 @@ fn agent_name(id: &str) -> String {
 /// `for_agent` is the agent that asked (used to check the grant takes effect).
 pub fn allow(st: &Arc<UiState>, body: &Value) -> Reply {
     let kind = body["kind"].as_str().context("kind required")?;
-    let target = body["target"].as_str().context("target required")?.trim();
     let for_agent = body["for_agent"].as_str().filter(|s| !s.is_empty()).context("for_agent required")?;
     let agent = body["agent"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
     let project = match body["project"].as_str().filter(|s| !s.is_empty()) {
@@ -128,58 +127,88 @@ pub fn allow(st: &Arc<UiState>, body: &Value) -> Reply {
     let _g = ACCESS_LOCK.lock().unwrap();
     let scope = Scope { agent, project: project.clone() };
     let probe_project = project.clone().unwrap_or_else(|| PathBuf::from(super::api::NO_PROJECT));
-    let (grant, pattern, req) = match kind {
+    // `targets`: exact files (the default in the console). `target` + `dir`:
+    // one file, or a whole folder when the human chose it.
+    let (grant, patterns, probes): (Grant, Vec<String>, Vec<(Action, Resource)>) = match kind {
         "site" => {
+            let target = body["target"].as_str().context("target required")?.trim();
             if !netlive::is_named_host(target) {
                 bail!("{target:?} is not a host name");
             }
             let h = netlive::host_key(target);
-            (Grant::Site, h.clone(), (Action::NetConnect, Resource::Host { host: h, port: 443 }))
+            (Grant::Site, vec![h.clone()], vec![(Action::NetConnect, Resource::Host { host: h, port: 443 })])
         }
         "read" | "write" => {
-            let t = target.trim_end_matches('/');
-            if !representable(t) || t.is_empty() {
-                bail!("{target:?} can't be written as a rule");
+            let (list, dir): (Vec<String>, bool) = match body["targets"].as_array() {
+                Some(a) => (a.iter().map(|v| v.as_str().map(str::to_string).context("targets must be strings")).collect::<Result<_>>()?, false),
+                None => (vec![body["target"].as_str().context("target or targets required")?.to_string()], body["dir"].as_bool().unwrap_or(false)),
+            };
+            if list.is_empty() || list.len() > 50 {
+                bail!("between 1 and 50 paths, please");
             }
-            // Not your whole home, nor a top-level system folder, in one click.
             let home = agentacl_core::identity::human()?.home;
-            if too_broad(t, &home.to_string_lossy()) {
-                bail!("{t} is too broad to allow from a request: allow a folder inside it (Policies has the full access map)");
-            }
-            let dir = body["dir"].as_bool().unwrap_or(false);
-            let pattern = if dir { format!("{t}/**") } else { t.to_string() };
-            let probe = if dir { format!("{t}/.agentacl-probe") } else { t.to_string() };
+            let (mut patterns, mut probes) = (vec![], vec![]);
             let action = if kind == "read" { Action::FsRead } else { Action::FsWrite(WriteOp::Write) };
-            (if kind == "read" { Grant::Read } else { Grant::Write }, pattern, (action, Resource::Path(probe)))
+            for raw in &list {
+                // No trimming: the agent names refused files, and "x.txt " is
+                // not "x.txt".
+                if raw.trim() != raw.as_str() {
+                    bail!("{raw:?} starts or ends with whitespace; allow it from Policies instead");
+                }
+                let t = raw.trim_end_matches('/');
+                if !representable(t) || t.is_empty() {
+                    bail!("{raw:?} can't be written as a rule");
+                }
+                // The keychain database: the login keychain can be cracked offline.
+                if fold_path(t).contains("/library/keychains") {
+                    bail!("{t} is a keychain database; keychain files can't be allowed from a request");
+                }
+                // Not your whole home, nor a top-level system folder, in one click.
+                if too_broad(t, &home.to_string_lossy()) {
+                    bail!("{t} is too broad to allow from a request: allow the files it needs (Policies has the full access map)");
+                }
+                patterns.push(if dir { format!("{t}/**") } else { t.to_string() });
+                probes.push((action, Resource::Path(if dir { format!("{t}/.agentacl-probe") } else { t.to_string() })));
+            }
+            (if kind == "read" { Grant::Read } else { Grant::Write }, patterns, probes)
         }
         o => bail!("unknown kind {o:?}"),
     };
-    let Some((name, yaml)) = access::with_rule(&st.paths, &scope, grant, &pattern)? else {
+    let Some((name, yaml)) = access::with_rules(&st.paths, &scope, grant, &patterns)? else {
         return Ok((200, json!({ "ok": true, "file": access::file_name(&scope), "unchanged": true })));
     };
-    // The complete policy must still load and compile, and the grant must
+    // The complete policy must still load and compile, and every grant must
     // actually take effect (a built-in protection wins over any allow).
     let chk = draft::check_access(&st.paths, for_agent, &probe_project, &name, Some(&yaml)).map_err(|e| e.context("the grant was refused"))?;
-    let subject = Subject { agent_id: for_agent.into(), project: probe_project.to_string_lossy().into(), ..Default::default() };
-    let d = chk.policy.evaluate(&Request { subject, action: req.0, resource: req.1 });
-    if d.effect != Effect::Allow {
-        match d.policy.as_str() {
-            "user" | "project" => bail!("still blocked by your own rule ({}): change it in Network or Policies", d.reason),
-            "protect-secrets" | "exec-persistence" | "agentacl-self" | "builtin" => {
-                bail!("protected by the built-in {} rule ({}): built-in protections can't be allowed from a request", d.policy, d.reason)
+    for (action, resource) in probes {
+        let subject = Subject { agent_id: for_agent.into(), project: probe_project.to_string_lossy().into(), ..Default::default() };
+        let shown = match &resource {
+            Resource::Path(p) => p.trim_end_matches("/.agentacl-probe").to_string(),
+            Resource::Host { host, .. } => host.clone(),
+            _ => String::new(),
+        };
+        let d = chk.policy.evaluate(&Request { subject, action, resource });
+        if d.effect != Effect::Allow {
+            match d.policy.as_str() {
+                "user" | "project" => bail!("{shown} is still blocked by your own rule ({}): change it in Network or Policies", d.reason),
+                "protect-secrets" | "exec-persistence" | "agentacl-self" | "builtin" => {
+                    bail!("{shown} is protected by the built-in {} rule ({}): built-in protections can't be allowed from a request", d.policy, d.reason)
+                }
+                _ => bail!("{shown} is still blocked ({}): {}", d.rule_id, d.reason),
             }
-            _ => bail!("still blocked ({}): {}", d.rule_id, d.reason),
         }
     }
     access::store(&st.paths, &name, Some(&yaml))?;
     let source = format!("access:{}", name.trim_end_matches(".yaml"));
     if grant == Grant::Site {
-        netlive::set_scoped_rule(&state_dir(st), &pattern, Effect::Allow, scope.agent.as_deref(), scope.project.as_deref().map(|p| p.to_str().unwrap_or_default()), &source)?;
+        netlive::set_scoped_rule(&state_dir(st), &patterns[0], Effect::Allow, scope.agent.as_deref(), scope.project.as_deref().map(|p| p.to_str().unwrap_or_default()), &source)?;
     }
     let who = scope.agent.as_deref().map(agent_name).unwrap_or_else(|| "every agent".into());
     let where_ = scope.project.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "every project".into());
-    st.store.lock().unwrap().record_ui(&st.ctx, "access.granted", &pattern, &format!("{kind} for {who} in {where_} ({name})"))?;
-    Ok((200, json!({ "ok": true, "file": name, "pattern": pattern, "applies_now": grant == Grant::Site })))
+    for pattern in &patterns {
+        st.store.lock().unwrap().record_ui(&st.ctx, "access.granted", pattern, &format!("{kind} for {who} in {where_} ({name})"))?;
+    }
+    Ok((200, json!({ "ok": true, "file": name, "patterns": patterns, "applies_now": grant == Grant::Site })))
 }
 
 /// `GET /api/access[?agent=]`: the access documents and their rules.
