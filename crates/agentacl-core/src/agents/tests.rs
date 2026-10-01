@@ -82,3 +82,21 @@ fn live_discover_finds_claude() {
     let c = found.iter().find(|d| d.id == "claude-code").expect("claude found");
     assert_eq!(c.confidence, Confidence::High);
 }
+
+#[test]
+fn keychain_only_without_a_login_in_the_environment() {
+    let claude = || super::provider("claude-code").unwrap().runtime_requirements();
+    let mut with_login = claude();
+    assert!(with_login.resolve_keychain(|_| false), "no token: the keychain holds the login");
+    assert!(with_login.mach_services.iter().any(|m| m == "com.apple.SecurityServer"));
+    assert!(with_login.read.iter().any(|r| r.contains("Library/Keychains")));
+    for var in ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"] {
+        let mut r = claude();
+        assert!(!r.resolve_keychain(|v| v == var), "{var}: no keychain");
+        assert!(!r.mach_services.iter().any(|m| m.contains("Security") || m.contains("securityd")), "{var}");
+        assert!(!r.read.iter().any(|p| p.contains("Keychains")) && r.unix_sockets.is_empty(), "{var}");
+    }
+    // Other agents never get it.
+    let mut codex = super::provider("codex").unwrap().runtime_requirements();
+    assert!(!codex.resolve_keychain(|_| false));
+}

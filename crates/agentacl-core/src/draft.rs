@@ -117,7 +117,8 @@ pub fn check_policy_files(paths: &Paths, agent_id: &str, project: &Path) -> Resu
 }
 
 fn check_sources(paths: &Paths, agent_id: &str, project: &Path, src: Vec<PolicySource>) -> Result<DraftCheck> {
-    let reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
+    let mut reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
+    reqs.resolve_keychain(agents::env_set);
     let mut lopts = LoadOptions { trusted_project_sha256: trust::hashes_for(paths, project)?, generated: vec![] };
     if agents::provider(agent_id).is_some() {
         lopts.generated.push(GeneratedDoc {

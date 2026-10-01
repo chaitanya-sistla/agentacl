@@ -55,11 +55,7 @@ impl AgentProvider for Claude {
 
     fn runtime_requirements(&self) -> RuntimeReqs {
         RuntimeReqs {
-            // Claude Code keeps its OAuth login in the macOS keychain. Reading the
-            // keychain files is required to log in; item access is still
-            // mediated by securityd and each item's ACL (threat T9). Users who
-            // prefer no keychain access can use ANTHROPIC_API_KEY instead.
-            read: vec!["${HOME}/Library/Keychains/**".into(), "/Library/Keychains/**".into(), "/private/var/db/mds/messages/*/**".into(), "/private/var/run/systemkeychaincheck.done".into()],
+            read: vec![],
             write: vec![
                 "${HOME}/.claude/**".into(),
                 "${HOME}/.claude.json".into(),
@@ -70,8 +66,8 @@ impl AgentProvider for Claude {
                 "${HOME}/Library/Caches/claude-cli-nodejs/**".into(),
             ],
             hosts: vec!["api.anthropic.com".into(), "statsig.anthropic.com".into(), "claude.ai".into(), "console.anthropic.com".into()],
-            mach_services: vec!["com.apple.SecurityServer".into(), "com.apple.securityd.xpc".into()],
-            unix_sockets: vec!["/private/var/run/systemkeychaincheck.socket".into()],
+            mach_services: vec![],
+            unix_sockets: vec![],
             env_passthrough: vec!["ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into(), "CLAUDE_CODE_*".into()],
             protected_configs: vec![
                 "${HOME}/.claude/settings.json".into(),
@@ -84,6 +80,15 @@ impl AgentProvider for Claude {
             ],
             launch_args: vec![],
             resume_args: vec!["--continue".into()],
+            // Claude Code keeps its /login in the macOS keychain. With a token
+            // in the environment (`claude setup-token` → CLAUDE_CODE_OAUTH_TOKEN,
+            // or ANTHROPIC_API_KEY) the session gets no keychain access at all.
+            keychain: KeychainReqs {
+                read: vec!["${HOME}/Library/Keychains/**".into(), "/Library/Keychains/**".into(), "/private/var/db/mds/messages/*/**".into(), "/private/var/run/systemkeychaincheck.done".into()],
+                mach_services: vec!["com.apple.SecurityServer".into(), "com.apple.securityd.xpc".into()],
+                unix_sockets: vec!["/private/var/run/systemkeychaincheck.socket".into()],
+                unless_env: vec!["CLAUDE_CODE_OAUTH_TOKEN".into(), "ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into(), "CLAUDE_CODE_USE_BEDROCK".into(), "CLAUDE_CODE_USE_VERTEX".into()],
+            },
         }
     }
 }

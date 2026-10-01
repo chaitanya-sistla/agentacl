@@ -291,3 +291,28 @@ fn invalid_policy_restart_keeps_agent_running() {
     let t = text(&out);
     assert!(t.contains("relaunched") && t.contains("restart refused"), "{t}");
 }
+
+/// cfprefsd runs outside the sandbox: an agent must not read another app's
+/// preferences through it, although their files are denied (a confused
+/// deputy). The global domain (locale) stays readable.
+#[test]
+fn preferences_of_other_apps_are_refused() {
+    let e = Env::new();
+    let domain = format!("com.agentacl.e2e.{}", std::process::id());
+    assert!(std::process::Command::new("/usr/bin/defaults").args(["write", &domain, "token", "pref-canary"]).status().unwrap().success());
+    let control = std::process::Command::new("/usr/bin/defaults").args(["read", &domain, "token"]).output().unwrap();
+    let o = e.run(&[], &format!("/usr/bin/defaults read {domain} token; /usr/bin/defaults read -g AppleLocale >/dev/null && echo global-ok; /usr/bin/defaults write {domain} planted yes"));
+    let planted = std::process::Command::new("/usr/bin/defaults").args(["read", &domain, "planted"]).output().unwrap();
+    let _ = std::process::Command::new("/usr/bin/defaults").args(["delete", &domain]).status();
+    // `defaults delete` leaves an empty plist behind.
+    if let Some(h) = std::env::var_os("HOME") {
+        let _ = std::fs::remove_file(std::path::Path::new(&h).join(format!("Library/Preferences/{domain}.plist")));
+    }
+    assert!(!planted.status.success(), "another app's preferences were written through cfprefsd");
+    assert_eq!(String::from_utf8_lossy(&control.stdout).trim(), "pref-canary", "positive control: readable outside the sandbox");
+    let t = text(&o);
+    assert!(!t.contains("pref-canary"), "another app's preferences leaked through cfprefsd: {t}");
+    assert!(t.contains("global-ok"), "the global domain stays readable: {t}");
+    let ev = e.events();
+    assert!(ev.iter().any(|v| v["action"] == "sandbox.user-preference-read" && v["resource"] == domain.as_str() && v["decision"] == "deny"), "refused by the kernel sandbox: {ev:#?}");
+}
