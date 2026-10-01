@@ -158,7 +158,10 @@ directory and covers the whole machine.
 - **Requests:** what agents tried and couldn't, grouped into decisions.
   - **Allow…** on a refused folder or site asks *for which agent* (this one
     or every agent) and *where* (this project or everywhere), and for files,
-    read or read and change. It's saved as a small policy file in
+    read or read and change. For files it grants **exactly the files that
+    were refused**; the whole folder is a separate choice, which also covers
+    files the agent hasn't asked for (and allowed reads aren't logged: only
+    refusals are). It's saved as a small policy file in
     `~/.config/agentacl/access/`; the Agents page lists every grant, with
     Remove. Built-in protections can't be granted, and neither can your
     whole home folder at once.
@@ -228,9 +231,14 @@ agentacl stop [session]               stop a supervised agent
 - **Nesting.** Agents that sandbox themselves can't nest inside AgentACL, so
   AgentACL becomes the outer boundary. Codex runs with
   `--sandbox danger-full-access`; leave Claude Code's own sandbox off.
-- **Keychain.** Claude Code keeps its login in the keychain, so its provider
-  can reach keychain files and `securityd`. Items stay protected by their
-  ACLs. Use `ANTHROPIC_API_KEY` to avoid this.
+- **Keychain.** With a `/login` login, Claude Code's session can reach the
+  keychain, where that login lives. It can then also run the credential
+  helpers other items trust: git's returns saved GitHub tokens without
+  asking (verified with `scripts/probes/keychain-deputy.sh`). It can also
+  read the encrypted keychain database file. Run
+  `claude setup-token` once and set `CLAUDE_CODE_OAUTH_TOKEN` (or
+  `ANTHROPIC_API_KEY`) in the shell you run `agentacl run` from: the
+  session then gets no keychain access.
 - **Git config.** `git remote add`, `git push -u` and interactive rebase fail
   inside a session, by design: those files run code outside the sandbox.
 

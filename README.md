@@ -183,9 +183,14 @@ enforcement is by the sandbox, not by the chain.
 - Seatbelt (`sandbox-exec`) is deprecated by Apple, though still shipped and
   widely used.
 - Data sent to a site you allowed isn't inspected.
-- Claude Code keeps its login in the macOS keychain, so its launch profile
-  can reach the keychain service; items stay protected by their own access
-  rules. Use `ANTHROPIC_API_KEY` to avoid this.
+- **Keychain, for Claude Code logged in with `/login`.** Claude keeps that
+  login in the macOS keychain, so the session can reach the keychain. It can
+  then also run the credential helpers other items trust: git's returns
+  saved GitHub tokens without asking (verified). It can also read the
+  encrypted keychain database file. To close
+  this, run `claude setup-token` once and set `CLAUDE_CODE_OAUTH_TOKEN` (or
+  `ANTHROPIC_API_KEY`) in the shell you run `agentacl run` from: the session
+  then gets no keychain access at all.
 - Tested on macOS 14 and 15 on Apple Silicon. Intel binaries are built but
   not run in CI.
 - Binaries are not yet notarized; macOS may warn on first run.

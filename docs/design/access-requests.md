@@ -117,7 +117,11 @@ by every supervisor:
   cards on other pages.)
 - **Refused**: file and site requests (as today), with **Allow…** opening the
   scope picker (agent: this / all; place: this project / everywhere; files:
-  read or read and change, for the folder the request is grouped under).
+  read or read and change). Files default to **exactly the paths that were
+  refused** (up to 50, one literal rule each): a grant wider than what was
+  asked makes the sandbox a formality and the audit log blind, since allowed
+  reads aren't recorded. The folder the request is grouped under is a
+  separate, explicit choice with that warning.
 - **Pending restart bar**: agents whose rules changed, "Restart now (the
   conversation resumes)", tracked as below.
 - Header: quiet toggle and "quiet for 1 hour".

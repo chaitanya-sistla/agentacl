@@ -7,6 +7,32 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+### Security
+- **Confused deputies.** An agent could read any app's preferences through
+  `cfprefsd`, which runs outside the sandbox, although the preference files
+  themselves were denied. Preference reads are now limited to the global
+  domain. An agent could also stream every process's unified log through
+  `diagnosticd`; that service is now denied. It could read, change and
+  delete another process's POSIX shared memory by name; shared memory is
+  now limited to Python's own segments and Apple's system state
+  (read-only). launchd jobs are probed for real in the test suite (no job
+  runs).
+- **Keychain.** A Claude Code session logged in with `/login` can reach the
+  keychain, so it could run the credential helpers other items trust (git's
+  returned a saved GitHub token without asking; verified) and read the
+  encrypted keychain database. With
+  `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`),
+  `ANTHROPIC_API_KEY`, or Bedrock or Vertex set in the shell `agentacl run`
+  starts from, the session now gets no keychain access at all. Keychain
+  files can't be granted from a request.
+  The docs no longer claim keychain items stay protected by their own
+  access rules.
+
+### Changed
+- **Allow… grants exactly the files that were refused**, by default. The
+  whole folder is a separate, explicit choice that says it also covers files
+  the agent hasn't asked for, and that allowed reads aren't recorded.
+
 ## [0.3.0] - 2026-09-30
 
 **Give each agent its own access, and decide without the noise.** v0.2.0
