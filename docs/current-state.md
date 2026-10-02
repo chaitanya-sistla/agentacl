@@ -147,7 +147,8 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
   launch.
 - Signed and notarized binaries (the release workflow supports it once
   secrets are configured).
-- Homebrew distribution.
+- Homebrew bottles (so the tap install doesn't need Command Line Tools) and
+  automatic formula updates on release.
 
 **NOT SUPPORTED:**
 
@@ -192,7 +193,10 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
   `sudo install … /usr/local/bin/`. Six commands (README).
 - Or `cargo install --locked --git … agentacl-cli`, which needs a Rust
   toolchain.
-- No Homebrew formula, no tap, no `brew install`.
+- Homebrew tap: `brew install chaitanya-sistla/agentacl/agentacl`
+  ([homebrew-agentacl](https://github.com/chaitanya-sistla/homebrew-agentacl)).
+  No bottles yet, so Homebrew requires up-to-date Command Line Tools; the
+  formula's version is updated by hand at each release.
 - No uninstall or upgrade documentation.
 
 ## 6. Test coverage today

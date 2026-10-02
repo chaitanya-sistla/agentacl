@@ -73,14 +73,21 @@ lists every threat considered.
 
 Requirements: macOS 13 or later, on Apple Silicon or Intel.
 
-Download the latest release from
+With Homebrew (needs up-to-date Command Line Tools):
+
+```sh
+brew install chaitanya-sistla/agentacl/agentacl
+brew upgrade agentacl                                # later releases
+```
+
+Or download the latest release from
 [Releases](https://github.com/chaitanya-sistla/agentacl/releases/latest).
 Each release is built by GitHub Actions from a tagged commit on `main`. It
 ships a universal binary, per-architecture binaries, `SHA256SUMS` and a
 build-provenance attestation.
 
 ```sh
-V=0.1.0
+V=0.3.1
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing          # must print: OK

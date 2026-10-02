@@ -40,6 +40,14 @@ where the agent can't change it.
 
 ## Quick start
 
+With Homebrew:
+
+```sh
+brew install chaitanya-sistla/agentacl/agentacl
+```
+
+Or from the release, checked against its published checksum:
+
 ```sh
 V=0.3.1
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
@@ -52,8 +60,8 @@ cd ~/src/your-project
 agentacl run -- claude        # or codex, gemini, opencode, any command
 ```
 
-Homebrew is on the way; until it lands, the steps above are the supported
-install. Releases are built by GitHub Actions from a tagged commit, with
+Homebrew needs up-to-date Command Line Tools (Software Update) to install
+from a tap. Releases are built by GitHub Actions from a tagged commit, with
 checksums and a [build-provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations).
 From source: `cargo install --locked --git https://github.com/chaitanya-sistla/agentacl agentacl-cli`.
 
@@ -221,7 +229,8 @@ Full list: [security-guarantees.md](docs/security-guarantees.md) and the
 
 ## Roadmap
 
-- Homebrew install
+- Homebrew bottles, so `brew install` doesn't need Command Line Tools, and
+  a formula that updates itself on each release
 - AgentBreak: reproducible, vendor-neutral security tests for local AI-agent
   boundaries, with machine-readable results
 - Endpoint Security backend: system-wide enforcement, argument-aware program
