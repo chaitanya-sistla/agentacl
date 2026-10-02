@@ -24,7 +24,11 @@ Not a prompt. Not a hook. Not an MCP rule. For an agent started with
 `agentacl run`, the operating system refuses the read, for the agent and for
 every child process it spawns.
 
-<!-- DEMO: the maintainer records the GIF with scripts/demo/ and inserts it here. -->
+![Claude Code reads a fake AWS credentials file when run directly; started with agentacl run, the same request gets Operation not permitted from the macOS kernel](docs/images/demo.gif)
+
+*Same request, two sessions: plain `claude` reads the (dummy) credentials;
+under `agentacl run`, the kernel refuses it and Claude can't talk its way
+around it.*
 
 ## Why
 
