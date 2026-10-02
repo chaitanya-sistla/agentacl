@@ -51,7 +51,26 @@ Add these repository secrets to ship signed and notarized binaries:
 | `MACOS_SIGN_IDENTITY` | e.g. `Developer ID Application: Chaitanya Sistla (TEAMID)` |
 | `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, `NOTARY_PASSWORD` | Apple ID, team id and an app-specific password, for `notarytool` |
 
-## 5. Authorship
+## 5. Homebrew tap
+
+After a stable release is published (not for `-rc` tags or dry runs), the
+**Update Homebrew tap** job points
+[`homebrew-agentacl`](https://github.com/chaitanya-sistla/homebrew-agentacl)'s
+`Formula/agentacl.rb` at the new universal tarball. It first re-downloads the
+published file and checks it against `SHA256SUMS`, then commits as Chaitanya
+Sistla and pushes. `brew install` and `brew upgrade` get the new version from
+then on.
+
+It needs one repository secret:
+
+| Secret | Value |
+|---|---|
+| `HOMEBREW_TAP_TOKEN` | A fine-grained token with **Contents: Read and write** on `homebrew-agentacl` only |
+
+Without it the job only warns, and the formula's `url` and `sha256` must be
+updated by hand.
+
+## 6. Authorship
 
 `scripts/check-authorship.sh` has two modes.
 

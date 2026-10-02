@@ -244,3 +244,57 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: [preflight, publish]
+    # Stable releases only: `brew install` must never land on an -rc.
+    if: ${{ !(inputs.dry_run) && needs.preflight.outputs.prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tap token present
+        id: token
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$TOKEN" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set: update Formula/agentacl.rb in homebrew-agentacl by hand"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: ${{ steps.token.outputs.skip != 'true' }}
+        with:
+          name: release-dist
+          path: dist
+      - uses: actions/checkout@v4
+        if: ${{ steps.token.outputs.skip != 'true' }}
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-agentacl
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Point the formula at this release
+        if: ${{ steps.token.outputs.skip != 'true' }}
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          file="agentacl-${VERSION}-macos-universal.tar.gz"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${file}"
+          sha=$(awk -v f="$file" '$2 == f { print $1 }' dist/SHA256SUMS)
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no checksum for $file in SHA256SUMS"; exit 1; }
+          # The published asset must be the one that was checksummed.
+          published=$(curl -fsSL --retry 5 --retry-all-errors "$url" | sha256sum | cut -d' ' -f1)
+          [[ "$published" == "$sha" ]] || { echo "::error::published $file has checksum $published, expected $sha"; exit 1; }
+          formula=tap/Formula/agentacl.rb
+          sed -i -E "s|^  url \".*\"$|  url \"${url}\"|; s|^  sha256 \"[0-9a-f]{64}\"$|  sha256 \"${sha}\"|" "$formula"
+          if ! grep -qxF "  url \"${url}\"" "$formula" || ! grep -qxF "  sha256 \"${sha}\"" "$formula"; then
+            echo "::error::could not update $formula"
+            exit 1
+          fi
+          cd tap
+          if git diff --quiet; then
+            echo "Formula already at ${VERSION}"
+            exit 0
+          fi
+          git diff
+          git -c user.name="Chaitanya Sistla" -c user.email="sistlachaitanya2@gmail.com" commit -q -am "agentacl ${VERSION}"
+          git push
