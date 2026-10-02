@@ -27,8 +27,7 @@ every child process it spawns.
 ![Claude Code reads a fake AWS credentials file when run directly; started with agentacl run, the same request gets Operation not permitted from the macOS kernel](docs/images/demo.gif)
 
 *Same request, two sessions: plain `claude` reads the (dummy) credentials;
-under `agentacl run`, the kernel refuses it and Claude can't talk its way
-around it.*
+under `agentacl run`, the kernel refuses it, and asking again doesn't help.*
 
 ## Why
 
