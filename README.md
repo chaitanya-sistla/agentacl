@@ -70,6 +70,17 @@ From source: `cargo install --locked --git https://github.com/chaitanya-sistla/a
 
 To always start an agent protected: `alias claude="agentacl run -- claude"`.
 
+To see what an agent could reach on your Mac, and what to fix first:
+
+```sh
+agentacl audit                 # or the console's Agents page
+```
+
+It checks credential files, cloud drives, company data services (Google
+Drive, Dropbox, Microsoft 365, Slack, Notion, GitHub, S3 and more), MCP
+servers and tokens written into their configs, and keychain access, and
+gives the fix for each problem. It shows names only, never a secret value.
+
 **Claude Code: use a token, not `/login`.** A `/login` login lives in the
 macOS keychain, so AgentACL has to let the session reach the keychain, and
 from there it can pull other saved credentials (see
@@ -88,6 +99,9 @@ agentacl run -- claude
 - Terraform state and credentials, git and package-registry tokens, private
   keys, GPG keys
 - browser cookies and saved passwords
+- synced cloud drives: Google Drive, OneDrive, Dropbox, Box and iCloud
+  (a project that lives inside one stays usable; iCloud's "Desktop &
+  Documents" sync isn't covered, and `agentacl audit` tells you if it's on)
 - git hooks and config, shell startup files, LaunchAgents, agent and editor
   configs, Python caches and user packages: the usual places to plant code
   that runs later, outside the sandbox (build files such as `package.json`

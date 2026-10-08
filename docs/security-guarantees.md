@@ -30,10 +30,11 @@ first row.
 
 | Capability | Status | Enforcement | Notes | Evidence |
 |---|---|---|---|---|
-| Reading built-in secrets (`.env*`, `~/.ssh`, cloud credentials, kubeconfig, Terraform, git/package tokens, keys, GPG, browser profiles) | ENFORCED | Seatbelt | All 12 built-in groups are probed (27 fake files) under a policy that otherwise allows all of home, so the secret rules alone block them. Case variants and symlinks are covered. `.env.example` and similar are allowed | `sandbox_every_builtin_secret_group`, `sandbox_reads`, `e2e::secret_read_blocked_and_audited` |
+| Reading built-in secrets (`.env*`, `~/.ssh`, cloud credentials, kubeconfig, Terraform, git/package tokens, keys, GPG, browser profiles, synced cloud drives) | ENFORCED | Seatbelt | All 13 built-in groups are probed (37 fake files) under a policy that otherwise allows all of home, so the secret rules alone block them. Case variants and symlinks are covered. `.env.example` and similar are allowed | `sandbox_every_builtin_secret_group`, `sandbox_reads`, `e2e::secret_read_blocked_and_audited` |
 | Writing or deleting protected files | ENFORCED | Seatbelt | Every built-in read-deny also denies write, unlink, rename and link. A `deny_read` in *your* policy denies reading, deleting, renaming and linking, but not overwriting: add the path to `deny_write` too | `sandbox_every_builtin_secret_group` (overwrite, delete), `sandbox_location_protection` (rename, link) |
 | Moving a secret out from under its rule (rename a parent, hard link, move the project, move a folder that holds a key) | PARTIALLY ENFORCED | Seatbelt | Rename and unlink of the protected path's ancestors are denied. For name rules (`**/*.pem`, `**/terraform.tfvars`), a folder in between can still be moved, so the same names are also denied in every other writable place (the temp directories and your `allow_write` locations). Not covered: `defaults.filesystem: allow` or a writable `/`, where anything can be moved anywhere | `sandbox_location_protection`, `sandbox_moved_directory_keeps_secret_names` |
 | Reading a protected file through a hard link that existed before the session | PARTIALLY ENFORCED | Startup check (fail closed) | `run` refuses to start if a concrete protected path or a protected file in the project has extra links (tested for a file in the project). Glob-matched files elsewhere in `$HOME` aren't scanned | `e2e::hardlinks_fail_closed` |
+| Synced cloud drives (Google Drive, OneDrive, Dropbox, Box in `~/Library/CloudStorage`; iCloud Drive; legacy `~/Dropbox`, `~/Dropbox (…)`, `~/Google Drive`, `~/OneDrive`, `~/OneDrive - …`, `~/Box`, `~/Box Sync`, `/Volumes/GoogleDrive*`), and the drive apps' own data (Google Drive's file cache in `DriveFS`, `~/.dropbox`; Box's and OneDrive's app data at their usual locations, not verified on a real install) | PARTIALLY ENFORCED | Seatbelt (built-in `cloud-drives` group) | Read, write and delete denied even under a policy that opens all of home. A project that lives inside a drive stays usable; the rest of the drive stays protected. Not covered: iCloud's "Desktop & Documents" sync (those files stay in `~/Desktop` and `~/Documents`; `agentacl audit` flags it), a Dropbox moved to a custom location, and a project that *is* or *contains* a drive or its top level (such as Google Drive's `My Drive`): the project is always open, so `run` warns and `audit` reports it as High. Reaching a drive's *web API* is a network question: see `agentacl audit` | `sandbox_every_builtin_secret_group`, `sandbox_project_inside_a_cloud_drive` (under a policy that opens all of home) |
 | Writes outside the project (default policy) | ENFORCED | Seatbelt | Project read/write, everything else denied unless a rule allows it | `sandbox_reads` (default policy) |
 | Planting code that runs later outside the sandbox (git hooks and config, `.git` swap, `.husky`, `.envrc`, shell rc, LaunchAgents, agent and editor configs, Python bytecode caches and user site-packages) | PARTIALLY ENFORCED | Seatbelt | Writing each listed file in place is blocked (tested). Not covered: build files (`package.json`, `Makefile`), which must stay writable and are **OBSERVED** (flagged "REVIEW BEFORE RUNNING"); a git `core.hooksPath` set to some other project directory; a folder prepared in a temp directory (holding a `__pycache__` or a nested `.git`) and then moved into the project; a sourceless `.pyc` outside `__pycache__`; `.pth` files in a project virtualenv (the project and its dependencies are writable by design). Trade-off: deleting a folder that contains `__pycache__` or a nested `.git` fails inside the sandbox | `sandbox_writes_and_exec_persistence`, `e2e::build_file_changes_flagged` |
 | Changing AgentACL's own policy, trust or audit log | ENFORCED | Seatbelt | Built-in `agentacl-self` can't be disabled | `sandbox_writes_and_exec_persistence` |
@@ -83,6 +84,21 @@ first row.
 | An agent approving its own network requests | ENFORCED | Approvals live in the state directory, which agents can't write | | `sandbox_writes_and_exec_persistence` (state dir), `netlive::tests` |
 | The console being driven by a web page or an agent | ENFORCED | Localhost only, one-time link, HttpOnly per-port cookie plus a custom header, strict Host/Origin/CSP; the proxy refuses the console's port | | `ui::tests::*`, `netproxy::tests::ui_port_is_always_refused` |
 | Audit completeness | PARTIALLY ENFORCED | Kernel violation reports + proxy | Kernel reports are rate-limited, so denial counts are a lower bound. Enforcement is unaffected | [macos-enforcement.md](macos-enforcement.md) §2.3 |
+
+## Checking your own setup
+
+`agentacl audit` (and the console's Agents page) reports what an agent
+would reach on *your* Mac, from the same rules `agentacl run` loads:
+credential files and cloud drives (protected or readable), company data
+services reachable over the network (Google APIs, Dropbox, Box, Microsoft
+365, Slack, Notion, Atlassian, GitHub, S3, each on several hosts), MCP
+servers (Claude Code, Codex, Cursor, Gemini, VS Code, Windsurf, Claude
+Desktop configs) and tokens written into their configs, keychain access,
+secret environment variables and grants made from the console. It is a
+report, not a control. It finds tokens by name (in `env`, headers,
+`--token`-style arguments and URL parameters), so a value under an unusual
+name isn't flagged. It never prints a secret value or a drive account
+(`exposure::tests`, `ui::tests::audit_endpoint`).
 
 ## Reading this table honestly
 
