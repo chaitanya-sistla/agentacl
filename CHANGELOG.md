@@ -7,6 +7,19 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-08
+
+**Know what your agents can reach, and keep them out of your company's
+drives.** The question security teams ask first is "can it get into our
+Google Drive?" This release answers it twice: synced cloud drives are now a
+built-in protection, and `agentacl audit` shows, in one command, everything
+an agent could reach on your Mac and what to fix first.
+
+```sh
+brew upgrade agentacl     # or: brew install chaitanya-sistla/agentacl/agentacl
+agentacl audit
+```
+
 ### Added
 - **`agentacl audit`**, and "What can this agent reach?" on the console's
   Agents page: credential files and cloud drives (protected or readable),
