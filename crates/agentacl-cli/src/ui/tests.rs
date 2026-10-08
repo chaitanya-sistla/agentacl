@@ -666,3 +666,16 @@ fn exact_file_grants_by_default() {
         assert_eq!(s, 400, "{bad:?}: {r}");
     }
 }
+
+#[test]
+fn audit_endpoint() {
+    let t = setup();
+    let tok = t.login();
+    let (s, v) = t.get(&tok, &format!("/api/audit?agent=claude-code&project={}", t.project.display()));
+    assert_eq!(s, 200, "{v}");
+    for k in ["findings", "credentials", "cloud_drives", "data_services", "mcp_servers", "keychain", "environment", "sockets", "grants"] {
+        assert!(!v[k].is_null(), "{k} missing: {v}");
+    }
+    assert_eq!(v["agent"], "claude-code");
+    assert_eq!(t.get(&tok, "/api/audit?agent=claude-code&project=/nonexistent/x").0, 400);
+}

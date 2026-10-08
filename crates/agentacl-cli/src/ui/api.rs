@@ -48,6 +48,7 @@ pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, S
         (Method::Post, "/api/approvals/answer") => super::network::approval_answer(st, body),
         (Method::Get, "/api/requests") => super::network::requests(st, q),
         (Method::Get, "/api/access") => super::access::list(st, q),
+        (Method::Get, "/api/audit") => audit(st, q),
         (Method::Post, "/api/access/allow") => super::access::allow(st, body),
         (Method::Post, "/api/access/remove") => super::access::remove(st, body),
         (Method::Post, "/api/approvals/extend") => super::access::extend(st, body),
@@ -805,4 +806,16 @@ fn evaluate(st: &Arc<UiState>, body: &Value) -> Reply {
     };
     let d = set.evaluate(&req);
     Ok((200, json!({ "effect": d.effect, "policy": d.policy, "rule_id": d.rule_id, "reason": term_safe(&d.reason), "trace": d.trace.iter().map(|t| term_safe(t)).collect::<Vec<_>>() })))
+}
+
+/// `GET /api/audit?agent=&project=`: what the agent could reach
+/// (`agentacl audit`). Uses the console's own environment, which may differ
+/// from the shell an agent is started from.
+fn audit(st: &Arc<UiState>, q: &HashMap<String, String>) -> Reply {
+    let agent = q.get("agent").filter(|a| !a.is_empty()).map(String::as_str).unwrap_or("claude-code");
+    let project = project_of(q.get("project").map(String::as_str))?;
+    let home = st.paths.home.clone();
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    let r = agentacl_core::exposure::report(&agentacl_core::exposure::Inputs { paths: &st.paths, agent, project: &project, home: &home, env: &env })?;
+    Ok((200, serde_json::to_value(r)?))
 }

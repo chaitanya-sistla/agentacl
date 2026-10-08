@@ -37,6 +37,8 @@ enum Command {
     Policy(PolicyCmd),
     /// Show authorization and audit events
     Events(EventsArgs),
+    /// What an agent could reach (credentials, cloud drives, MCP servers, company data services) and what to fix first
+    Audit(AuditArgs),
     /// Launch an agent under AgentACL supervision
     Run(RunArgs),
     /// Relaunch a running session under the current policy (keeps the conversation where the agent supports it)
@@ -45,6 +47,22 @@ enum Command {
     Stop(RestartArgs),
     /// Local policy UI in your browser (127.0.0.1 only)
     Ui(UiArgs),
+}
+
+#[derive(Args)]
+struct AuditArgs {
+    /// Agent id to audit (claude-code, codex, gemini-cli, …)
+    #[arg(long, default_value = "claude-code")]
+    agent: String,
+    /// Project root (default: git toplevel of the current directory)
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Machine-readable output
+    #[arg(long)]
+    json: bool,
+    /// Exit with status 1 when there is a high-severity finding (for scripts and CI)
+    #[arg(long)]
+    strict: bool,
 }
 
 #[derive(Args)]
@@ -183,6 +201,7 @@ fn main() -> ExitCode {
                 Ok(0)
             }
             Command::Events(a) => events(&paths, a),
+            Command::Audit(a) => audit(&paths, a),
             Command::Run(a) => run(&paths, a),
             Command::Restart(a) => restart(&paths, a),
             Command::Stop(a) => stop(&paths, a),
@@ -617,4 +636,79 @@ fn print_summary(summary: &supervisor::Summary, home: &str) {
         ));
     }
     eprint!("{err}");
+}
+
+fn audit(paths: &Paths, a: AuditArgs) -> Result<i32> {
+    use agentacl_core::escape::term_safe;
+    use agentacl_core::exposure::{report, Inputs, Item, Severity};
+    let h = identity::human()?;
+    // Most checks don't depend on the project: from the home folder (or
+    // anywhere that isn't a project), audit with no project.
+    let project = match identity::resolve_project(&std::env::current_dir()?, a.project.as_deref(), &h.home) {
+        Ok(p) => p,
+        Err(e) if a.project.is_none() => {
+            eprintln!("agentacl: no project here ({e:#}); auditing without one. Pass --project to include a project's MCP servers and rules.");
+            PathBuf::from("/private/var/empty")
+        }
+        Err(e) => return Err(e),
+    };
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    let r = report(&Inputs { paths, agent: &a.agent, project: &project, home: &h.home, env: &env })?;
+    let code = if a.strict && r.count(Severity::High) > 0 { 1 } else { 0 };
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+        return Ok(code);
+    }
+    let name = agents::provider(&a.agent).map(|p| p.display_name().to_string()).unwrap_or(a.agent.clone());
+    let tilde = |p: &str| p.strip_prefix(&*h.home.to_string_lossy()).map(|r| format!("~{r}")).unwrap_or(p.to_string());
+    println!("AgentACL audit: {} in {}", term_safe(&name), term_safe(&tilde(&r.project)));
+    println!("{} high · {} medium · {} info\n", r.count(Severity::High), r.count(Severity::Medium), r.count(Severity::Info));
+    for f in &r.findings {
+        let tag = match f.severity {
+            Severity::High => "HIGH  ",
+            Severity::Medium => "MEDIUM",
+            Severity::Info => "INFO  ",
+        };
+        println!("{tag} {}", term_safe(&f.title));
+        println!("       {}", term_safe(&f.detail));
+        println!("       Fix: {}\n", term_safe(&f.fix));
+    }
+    if r.findings.is_empty() {
+        println!("Nothing to fix: no credential, cloud drive or company data service is open to this agent.\n");
+    }
+    let line = |label: &str, items: &[Item], empty: &str| {
+        let text = if items.is_empty() { empty.to_string() } else { items.iter().map(|i| format!("{} {}", term_safe(&i.name), i.status)).collect::<Vec<_>>().join(" · ") };
+        println!("  {label:<14}{text}");
+    };
+    println!("What {} can reach:", term_safe(&name));
+    line("Credentials", &r.credentials, "none found");
+    line("Cloud drives", &r.cloud_drives, "none found");
+    let by = |st: &str| r.data_services.iter().filter(|d| d.status == st).map(|d| d.name.as_str()).collect::<Vec<_>>();
+    let (reach, asks, blocked) = (by("reachable"), by("asks"), by("blocked"));
+    let mut svc = vec![];
+    if !reach.is_empty() {
+        svc.push(format!("REACHABLE: {}", reach.join(", ")));
+    }
+    if !asks.is_empty() {
+        svc.push(format!("{} ask you first", asks.len()));
+    }
+    if !blocked.is_empty() {
+        svc.push(format!("{} blocked", blocked.len()));
+    }
+    println!("  {:<14}{} (of {} checked: Google Drive, Dropbox, Box, Microsoft 365, Slack, Notion, Atlassian, GitHub, S3)", "Data services", svc.join(" · "), r.data_services.len());
+    line("MCP servers", &r.mcp_servers, "none configured");
+    println!("  {:<14}{}", "Keychain", r.keychain.detail);
+    let withheld: Vec<&str> = r.environment.iter().filter(|e| e.status == "withheld").map(|e| e.name.as_str()).collect();
+    let passed: Vec<&str> = r.environment.iter().filter(|e| e.status == "passed").map(|e| e.name.as_str()).collect();
+    println!(
+        "  {:<14}{} secret variable(s) withheld{}{}",
+        "Environment",
+        withheld.len(),
+        if withheld.is_empty() { String::new() } else { format!(" ({})", term_safe(&withheld.join(", "))) },
+        if passed.is_empty() { String::new() } else { format!(" · passed: {}", term_safe(&passed.join(", "))) }
+    );
+    line("Sockets", &r.sockets, "none");
+    line("Grants", &r.grants, "none from the console");
+    println!("  {:<14}unknown sites are {}", "Network", if r.network_mode == "ask" { "asked about" } else { "blocked" });
+    Ok(code)
 }

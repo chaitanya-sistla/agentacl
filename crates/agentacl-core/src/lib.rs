@@ -8,6 +8,7 @@ pub mod config;
 pub mod draft;
 pub mod enforce;
 pub mod escape;
+pub mod exposure;
 pub mod fsafe;
 pub mod identity;
 pub mod netcat;
