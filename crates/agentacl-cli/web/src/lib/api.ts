@@ -448,3 +448,29 @@ export interface NotifySettings {
   wait_secs: number
   wait_choices: number[]
 }
+
+export interface AuditItem {
+  name: string
+  status: string
+  detail: string
+}
+export interface AuditFinding {
+  severity: 'high' | 'medium' | 'info'
+  title: string
+  detail: string
+  fix: string
+}
+export interface AuditReport {
+  agent: string
+  project: string
+  findings: AuditFinding[]
+  credentials: AuditItem[]
+  cloud_drives: AuditItem[]
+  data_services: AuditItem[]
+  mcp_servers: AuditItem[]
+  keychain: AuditItem
+  environment: AuditItem[]
+  sockets: AuditItem[]
+  grants: AuditItem[]
+  network_mode: string
+}

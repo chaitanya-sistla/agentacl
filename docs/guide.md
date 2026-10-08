@@ -136,6 +136,7 @@ Reason:    SSH keys and configuration are protected
 | `git-creds`, `package-creds` | `~/.git-credentials`, `gh` tokens, `.npmrc`, `.pypirc`, `.netrc`, docker and cargo credentials |
 | `keys`, `gpg` | `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `~/.gnupg/**` |
 | `browsers` | Chrome, Brave, Edge, Arc, Firefox and Safari profiles, `~/Library/Cookies` |
+| `cloud-drives` | Google Drive, OneDrive, Dropbox, Box and iCloud Drive folders (a project inside one stays usable) |
 | *always on* | git config and hooks, shell startup files, LaunchAgents, agent settings, AgentACL's own files; secret environment variables (`*_TOKEN`, `AWS_*`, …) are withheld |
 
 A secret group can be switched off in the console or with
@@ -223,6 +224,7 @@ agentacl ui                           local console
 agentacl status                       backend, capabilities, active sessions
 agentacl agents [--all]               supervised sessions (and unsupervised agents)
 agentacl policy check [--path|--exec|--host X]   effective rules, or one decision with its trace
+agentacl audit [--agent ID] [--project DIR] [--json] [--strict]  what an agent could reach, and what to fix first
 agentacl policy trust --sha256 <sha>  let this project's policy widen access (exact bytes only)
 agentacl events [--follow] [--json]   audit log (NDJSON with --json)
 agentacl restart [session]            relaunch under current rules, conversation kept

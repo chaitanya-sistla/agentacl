@@ -30,7 +30,7 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
 | Area | What exists | Where |
 |---|---|---|
 | Policy engine | YAML v1 with closed schema. Explicit deny wins. Built-ins, user and project layers; project policies are restrict-only unless trusted by hash. Variables (`${HOME}`, `${PROJECT}`, …), globs with `except`, per-agent `match`. Two-phase network decisions (host, then resolved addresses). Pure, no I/O | `crates/agentacl-policy` |
-| Built-in protections | `protect-secrets` (12 groups: env files, ssh, aws, gcp, azure, kube, terraform, git and package credentials, keys, gpg, browsers). `exec-persistence`, `agentacl-self`, and the runtime baseline | `crates/agentacl-policy/builtin/*.yaml` (data, not code) |
+| Built-in protections | `protect-secrets` (13 groups: env files, ssh, aws, gcp, azure, kube, terraform, git and package credentials, keys, gpg, browsers, cloud drives). `exec-persistence`, `agentacl-self`, and the runtime baseline | `crates/agentacl-policy/builtin/*.yaml` (data, not code) |
 | Seatbelt backend | Profile compiler (`(deny default)`, allows, then all denies last), a Mach-service allowlist, kernel-denial parsing with per-rule tags, dry-run | `crates/agentacl-core/src/enforce/` |
 | Supervisor | Launches on a pty, strips secret env vars, fails closed on hard links, cleans up orphans, restarts on the same session, and flags build-file diffs at session end | `crates/agentacl-core/src/supervisor/` |
 | Network | CONNECT and HTTP proxy. The sandbox allows egress only to the proxy port. Reserved ranges are refused. Live console rules, *Ask me* approvals and revocations | `netproxy.rs`, `netlive.rs` |
@@ -46,7 +46,7 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
 **ENFORCED** (kernel or proxy; tests in parentheses):
 
 - **Reading and overwriting built-in secret files, for the agent and every
-  descendant.** All 12 `protect-secrets` groups are probed (27 fake files)
+  descendant.** All 13 `protect-secrets` groups are probed (37 fake files)
   under a policy that otherwise opens all of home, so the secret rules alone
   block them. Case variants and symlinks are covered; `.env.example` and
   similar stay readable. Tests: `enforce::tests::sandbox_every_builtin_secret_group`

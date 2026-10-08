@@ -14,6 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Command, Empty, ErrorText, Loading, Mono, PageHeader } from '@/components/app/common'
 import { RestartBadge, useRestartState, useSessionActions } from '@/features/session-actions'
 import { AgentAccess } from '@/features/agent-access'
+import { AgentAudit } from '@/features/agent-audit'
 
 const CMD: Record<string, string> = { 'claude-code': 'claude', codex: 'codex', 'gemini-cli': 'gemini', 'copilot-cli': 'copilot', opencode: 'opencode' }
 
@@ -245,6 +246,7 @@ export default function Agents() {
           <p className="text-xs text-muted-foreground">Tip: add a shell alias such as <Mono>alias claude=&quot;agentacl run -- claude&quot;</Mono> so it’s always protected.</p>
         </DialogContent>
       </Dialog>
+      <AgentAudit />
       <AgentAccess />
     </>
   )

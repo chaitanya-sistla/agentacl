@@ -77,6 +77,7 @@ export const groupLabel: Record<string, string> = {
   keys: 'Private keys & certificates',
   gpg: 'GPG keys',
   browsers: 'Browser cookies & passwords',
+  'cloud-drives': 'Cloud drives (Google Drive, Dropbox, OneDrive, iCloud, Box)',
   'exec-persistence': 'Persistence (git hooks, shell rc, launch agents)',
   'agentacl-self': 'AgentACL itself',
   network: 'Network',

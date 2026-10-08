@@ -7,6 +7,31 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+### Added
+- **`agentacl audit`**, and "What can this agent reach?" on the console's
+  Agents page: credential files and cloud drives (protected or readable),
+  company data services reachable over the network (Google APIs, Dropbox,
+  Box, Microsoft Graph, Slack, Notion, Atlassian, GitHub, S3), MCP servers
+  and tokens written in plain text into config files the agent can read,
+  keychain access, secret environment variables and console grants, each
+  finding with its fix. `--json` for scripts, `--strict` to fail on a
+  high-severity finding. Names only, never secret values.
+
+### Security
+- **Cloud drives are a built-in protection** (`cloud-drives`): Google Drive,
+  OneDrive, Dropbox, Box and iCloud Drive folders, and the drive apps' own
+  caches (Google Drive keeps copies of synced files there), are refused to
+  an agent for reading, changing and deleting, even under a rule that opens
+  all of home. A project
+  that lives inside a cloud drive stays usable. If you rely on an agent
+  reading a drive, switch the group off with
+  `builtin: { disable: [cloud-drives] }`. Not covered: iCloud's "Desktop &
+  Documents" sync and a Dropbox in a custom location (`agentacl audit`
+  reports the first); `agentacl run` warns, and `audit` reports, when the
+  project is or contains a drive (such as Google Drive's `My Drive`).
+- Project folders whose path contains `*` or `?` are refused: those would
+  act as wildcards in `${PROJECT}` rules.
+
 ## [0.3.1] - 2026-10-01
 
 **Closing the side doors.** A sandbox is only as strong as the services it

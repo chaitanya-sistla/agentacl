@@ -164,12 +164,17 @@ fn provider_doc(id: &str, reqs: &RuntimeReqs) -> GeneratedDoc {
 /// Loads the effective policy for `policy check` (same layering as `run`,
 /// minus per-session grants).
 pub fn load_policy_for_check(paths: &Paths, agent_id: &str, project: &Path, policy_file: Option<&Path>) -> Result<(PolicySet, RuntimeReqs)> {
-    let human = identity::human()?;
+    let home = identity::human()?.home;
+    load_policy_with(paths, agent_id, project, policy_file, &home, agents::env_set)
+}
+
+/// As [`load_policy_for_check`], for a given home folder and environment.
+pub fn load_policy_with(paths: &Paths, agent_id: &str, project: &Path, policy_file: Option<&Path>, home: &Path, has_env: impl Fn(&str) -> bool) -> Result<(PolicySet, RuntimeReqs)> {
     let mut reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
-    reqs.resolve_keychain(agents::env_set);
+    reqs.resolve_keychain(has_env);
     let tmp = darwin_user_temp_dir()?.join("agentacl").join("<session>");
     let vars = Vars {
-        home: human.home.to_string_lossy().into(),
+        home: home.to_string_lossy().into(),
         project: project.to_string_lossy().into(),
         tmpdir: tmp.to_string_lossy().into(),
         agent_state: None,
@@ -193,6 +198,9 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         None => std::env::current_dir()?,
     };
     let project = identity::resolve_project(&cwd, opts.project.as_deref(), &human.home)?;
+    if let Some(loc) = crate::exposure::project_opens_drive(&human.home, &project) {
+        eprintln!("agentacl: warning: this project includes {loc}; a project is always open to the agent, so the cloud-drives protection doesn't apply inside it. Start from a project folder within the drive instead.");
+    }
     let (binary, agent) = identify_agent(argv0, opts.agent_id.as_deref())?;
     let provider = agents::provider(&agent.id);
     let mut reqs = provider.as_ref().map(|p| p.runtime_requirements()).unwrap_or_default();

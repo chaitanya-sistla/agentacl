@@ -9,7 +9,7 @@ fn builtins_load_with_all_groups() {
     let mut groups = protect_secrets_groups();
     groups.sort();
     groups.dedup();
-    let want = ["aws", "azure", "browsers", "env-files", "gcp", "git-creds", "gpg", "keys", "kube", "package-creds", "ssh", "terraform"];
+    let want = ["aws", "azure", "browsers", "cloud-drives", "env-files", "gcp", "git-creds", "gpg", "keys", "kube", "package-creds", "ssh", "terraform"];
     assert_eq!(groups, want);
     let names: Vec<&str> = set.docs.iter().map(|d| d.name.as_str()).collect();
     for n in ["protect-secrets", "exec-persistence", "agentacl-self", "runtime", "default"] {

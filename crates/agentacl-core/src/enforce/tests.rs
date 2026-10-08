@@ -232,6 +232,16 @@ fn sandbox_every_builtin_secret_group() {
         ("browsers", "$H/Library/Application Support/Google/Chrome/Default/Cookies"),
         ("browsers", "$H/Library/Cookies/Cookies.binarycookies"),
         ("browsers", "$H/Library/Safari/History.db"),
+        ("cloud-drives", "$H/Library/CloudStorage/GoogleDrive-a@example.com/My Drive/evidence.txt"),
+        ("cloud-drives", "$H/Library/CloudStorage/OneDrive-Acme/contract.txt"),
+        ("cloud-drives", "$H/Library/Mobile Documents/com~apple~CloudDocs/notes.txt"),
+        ("cloud-drives", "$H/Dropbox/finance.txt"),
+        ("cloud-drives", "$H/Dropbox (Acme)/board.txt"),
+        ("cloud-drives", "$H/Google Drive/legacy.txt"),
+        ("cloud-drives", "$H/OneDrive - Acme/legacy.txt"),
+        ("cloud-drives", "$H/Box/legacy.txt"),
+        ("cloud-drives", "$H/Library/Application Support/Google/DriveFS/1234/content_cache/a/b.bin"),
+        ("cloud-drives", "$H/.dropbox/instance1/sync/db.dbx"),
     ];
     let real = |p: &str| PathBuf::from(p.replace("$H", &f.home.to_string_lossy()).replace("$P", &f.project.to_string_lossy()));
     for (group, p) in files {
@@ -268,6 +278,44 @@ fn sandbox_every_builtin_secret_group() {
     for g in want {
         assert!(groups.contains(&g.as_str()), "no probe for built-in group {g}");
     }
+}
+
+/// A project that lives inside a synced cloud drive stays usable; the rest
+/// of the drive stays protected.
+#[test]
+fn sandbox_project_inside_a_cloud_drive() {
+    let f = Fixture::new();
+    let drive = f.home.join("Library/CloudStorage/Dropbox");
+    let proj = drive.join("code/app");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(proj.join("main.txt"), "project-ok").unwrap();
+    std::fs::write(drive.join("payroll.txt"), "drive-canary").unwrap();
+    let mut vars = f.vars();
+    vars.project = proj.to_string_lossy().into();
+    // All of home is open, so only the cloud-drives rule can refuse the drive.
+    let mut src = builtin_sources(false);
+    src.push(PolicySource {
+        layer: Layer::User,
+        name: "user".into(),
+        yaml: "version: v1\ndefaults: {filesystem: deny}\nfilesystem:\n  allow_read: [\"${HOME}/**\", \"${PROJECT}/**\"]\n  allow_write: [\"${HOME}/**\", \"${PROJECT}/**\"]\n".into(),
+    });
+    let pol = PolicySet::load(src, &vars, &LoadOptions::default()).unwrap();
+    let project = proj.to_string_lossy().into_owned();
+    let text = sbpl::compile_profile(&pol, &CompileInput { agent_id: "custom:test", project: &project, ..input() }).unwrap();
+    let prof = f.root.join("cloud.sb");
+    std::fs::write(&prof, text).unwrap();
+    let (c, o) = f.run(&prof, &format!("cd '{}' && cat main.txt && printf more >> main.txt && echo wrote", proj.display()));
+    assert!(c == 0 && o.contains("project-ok") && o.contains("wrote"), "the project inside the drive works: {o}");
+    std::fs::write(f.home.join("notes.txt"), "home-ok").unwrap();
+    let (c, o) = f.run(&prof, "cat \"$H/notes.txt\"");
+    assert_eq!((c, o.as_str()), (0, "home-ok"), "positive control: home is open");
+    let (c, o) = f.run(&prof, &format!("cat '{}'", drive.join("payroll.txt").display()));
+    assert!(c != 0 && !o.contains("canary"), "the rest of the drive stays protected: {o}");
+    // Similar names are not drives.
+    std::fs::create_dir_all(f.home.join("dropbox-sdk")).unwrap();
+    std::fs::write(f.home.join("dropbox-sdk/x.txt"), "sdk-ok").unwrap();
+    let (c, o) = f.run(&prof, "cat \"$H/dropbox-sdk/x.txt\"");
+    assert_eq!((c, o.as_str()), (0, "sdk-ok"), "~/dropbox-sdk is not a cloud drive");
 }
 
 /// The boundary holds through interpreters and nested delegation:
