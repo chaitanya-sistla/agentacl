@@ -49,7 +49,9 @@ pub fn resolve_project(cwd: &Path, override_: Option<&Path>, home: &Path) -> Res
         bail!("refusing to use {} as the project: it is {} your home directory; run from inside a project or pass --project", project.display(), if project == home { "" } else { "an ancestor of" });
     }
     for c in project.to_string_lossy().chars() {
-        if c == '"' || c == '\\' || c.is_control() {
+        // `*` and `?` would act as wildcards in `${PROJECT}` rules (an
+        // exception for the project would cover its siblings).
+        if c == '"' || c == '\\' || c == '*' || c == '?' || c.is_control() {
             bail!("project path contains a character AgentACL cannot safely express in a sandbox profile: {c:?}");
         }
     }
