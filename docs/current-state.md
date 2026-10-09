@@ -140,7 +140,10 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
 
 **PLANNED** (not implemented):
 
-- Endpoint Security backend: a stub that reports unavailable.
+- Endpoint Security backend (`crates/agentacl-es`, the `agentacl-esd`
+  daemon): implemented and unit-tested, not yet run on a real ES client
+  ([design](design/endpoint-security.md)). The `MacOSEndpointSecurityBackend`
+  launch backend still reports unavailable.
 - System-wide enforcement for unsupervised agents.
 - Interactive allow-once for **files and programs**. Network approvals exist;
   file and program approvals don't, because a Seatbelt profile is fixed at
@@ -251,6 +254,7 @@ Release tags are restricted to the maintainer (repository ruleset).
   `enforce::tests::sandbox_every_builtin_secret_group`, which fails if a
   group has none.
 - **Enforcement:** the `EnforcementBackend` trait with the Seatbelt
-  implementation and the Endpoint Security stub.
+  implementation, the Endpoint Security stub launch backend, and the
+  `agentacl-es` engine's `PolicyProvider`.
 - **Security tests:** there's no contributor-facing interface yet. Sandbox
   tests are Rust tests using `Fixture`.
