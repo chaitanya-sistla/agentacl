@@ -1,0 +1,28 @@
+[package]
+name = "agentacl-es"
+description = "AgentACL Endpoint Security backend: system-wide agent identity and enforcement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "agentacl-esd"
+path = "src/bin/agentacl-esd.rs"
+
+[dependencies]
+agentacl-policy.workspace = true
+agentacl-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+# Pinned: 0.6.1+ needs Rust 1.88, above our minimum supported 1.85.
+endpoint-sec = { version = "=0.6.0", features = ["macos_13_0_0", "audit_token_from_pid"] }
+endpoint-sec-sys = "=0.6.0"
+
+[dev-dependencies]
+tempfile.workspace = true

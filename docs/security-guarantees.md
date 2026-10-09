@@ -24,7 +24,7 @@ first row.
 |---|---|---|---|---|
 | Agent started with `agentacl run`, and all its descendants | ENFORCED | macOS Seatbelt (kernel sandbox), inherited across fork/exec | Holds through shells, nested shells, Python and Python subprocesses | `sandbox_holds_through_python_and_nested_shells`, `enforce::tests::*`, `e2e::*` |
 | Agent started outside AgentACL (plain `claude`, IDE, GUI) | OBSERVED | Process discovery | Reported as *not protected* by `discover`, `agents --all` and the console. **Not blocked** | `agents::tests`, manual |
-| System-wide enforcement regardless of how the agent was launched | PLANNED | Endpoint Security | Needs Apple's `com.apple.developer.endpoint-security.client` entitlement and a system extension. See [macos-enforcement.md](macos-enforcement.md) §3 | none |
+| System-wide enforcement regardless of how the agent was launched | PLANNED | Endpoint Security (`agentacl-esd`) | Implemented, and verified on a development VM with SIP and AMFI off (smoke test 18/18, as a LaunchDaemon and as a system extension). It can't run on a standard Mac until Apple grants the `com.apple.developer.endpoint-security.client` entitlement, so it stays PLANNED for users ([design](design/endpoint-security.md)) | `agentacl-es` engine tests; `scripts/es/smoke-test.sh` on a development VM |
 
 ## Files
 

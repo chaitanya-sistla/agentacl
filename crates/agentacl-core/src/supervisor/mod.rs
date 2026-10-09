@@ -165,14 +165,34 @@ fn provider_doc(id: &str, reqs: &RuntimeReqs) -> GeneratedDoc {
 /// minus per-session grants).
 pub fn load_policy_for_check(paths: &Paths, agent_id: &str, project: &Path, policy_file: Option<&Path>) -> Result<(PolicySet, RuntimeReqs)> {
     let home = identity::human()?.home;
-    load_policy_with(paths, agent_id, project, policy_file, &home, agents::env_set)
+    load_policy_with(paths, agent_id, project, policy_file, &home, agents::env_set, None)
+}
+
+/// Claude Code's settings files, whose hook scripts an agent must not edit.
+pub fn claude_settings(home: &Path, project: &Path) -> Vec<PathBuf> {
+    vec![home.join(".claude/settings.json"), home.join(".claude/settings.local.json"), project.join(".claude/settings.json"), project.join(".claude/settings.local.json")]
 }
 
 /// As [`load_policy_for_check`], for a given home folder and environment.
-pub fn load_policy_with(paths: &Paths, agent_id: &str, project: &Path, policy_file: Option<&Path>, home: &Path, has_env: impl Fn(&str) -> bool) -> Result<(PolicySet, RuntimeReqs)> {
+/// `tmpdir` is the agent's temp folder (`${TMPDIR}`); by default a session's.
+/// With a `tmpdir` (an agent AgentACL didn't launch, enforced by Endpoint
+/// Security) the protections `agentacl run` adds per session that don't
+/// depend on the launch are added too: hook scripts can't be written.
+pub fn load_policy_with(
+    paths: &Paths,
+    agent_id: &str,
+    project: &Path,
+    policy_file: Option<&Path>,
+    home: &Path,
+    has_env: impl Fn(&str) -> bool,
+    tmpdir: Option<&Path>,
+) -> Result<(PolicySet, RuntimeReqs)> {
     let mut reqs = agents::provider(agent_id).map(|p| p.runtime_requirements()).unwrap_or_default();
     reqs.resolve_keychain(has_env);
-    let tmp = darwin_user_temp_dir()?.join("agentacl").join("<session>");
+    let tmp = match tmpdir {
+        Some(t) => t.to_path_buf(),
+        None => darwin_user_temp_dir()?.join("agentacl").join("<session>"),
+    };
     let vars = Vars {
         home: home.to_string_lossy().into(),
         project: project.to_string_lossy().into(),
@@ -184,6 +204,10 @@ pub fn load_policy_with(paths: &Paths, agent_id: &str, project: &Path, policy_fi
     let mut lopts = LoadOptions { trusted_project_sha256: crate::trust::hashes_for(paths, project)?, generated: vec![] };
     if agents::provider(agent_id).is_some() {
         lopts.generated.push(provider_doc(agent_id, &reqs));
+    }
+    if tmpdir.is_some() {
+        let deny_write = integrity::claude_hook_scripts(&claude_settings(home, project));
+        lopts.generated.push(GeneratedDoc { name: "session".into(), reason: "AgentACL session requirement".into(), deny_write, ..Default::default() });
     }
     let set = PolicySet::load(policy_sources(paths, policy_file, project)?, &vars, &lopts)?;
     Ok((set, reqs))
@@ -232,10 +256,7 @@ pub fn prepare(paths: &Paths, opts: &RunOptions) -> Result<Prepared> {
         Some(dir) if dir != Path::new("/") && !human.home.starts_with(dir) => session_doc.allow_read.push(format!("{}/**", dir.display())),
         _ => session_doc.allow_read.push(binary.to_string_lossy().into_owned()),
     }
-    let mut settings = vec![human.home.join(".claude/settings.json"), human.home.join(".claude/settings.local.json")];
-    settings.push(project.join(".claude/settings.json"));
-    settings.push(project.join(".claude/settings.local.json"));
-    session_doc.deny_write.extend(integrity::claude_hook_scripts(&settings));
+    session_doc.deny_write.extend(integrity::claude_hook_scripts(&claude_settings(&human.home, &project)));
     if let Some(pf) = &opts.policy_file {
         session_doc.deny_write.push(canon_or(pf).to_string_lossy().into());
     }
@@ -568,6 +589,9 @@ extern "C" fn on_restart(_: libc::c_int) {
 /// process must be an `agentacl` binary that started no later than the
 /// session did (a reused pid belongs to a process started afterwards).
 pub fn verified_supervisor(s: &crate::audit::SessionRecord) -> Result<i32> {
+    if s.backend == "endpoint-security" {
+        bail!("{} is enforced system-wide by Endpoint Security; it has no AgentACL supervisor to stop or restart (stop the agent itself)", s.session_id);
+    }
     let f = crate::proc::facts(s.supervisor_pid).ok_or_else(|| anyhow::anyhow!("the supervisor of {} is not running", s.session_id))?;
     let exe = f.exe.unwrap_or_default();
     if !exe.ends_with("/agentacl") {

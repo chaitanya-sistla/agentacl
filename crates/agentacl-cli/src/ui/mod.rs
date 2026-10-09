@@ -174,7 +174,7 @@ pub fn old_supervisor_sessions(state: &UiState) -> Vec<String> {
         .into_iter()
         .filter(|s| {
             let v: serde_json::Value = serde_json::from_str(&s.identity_json).unwrap_or_default();
-            !v["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "ui-port-deny")) && agentacl_core::proc::facts(s.supervisor_pid).is_some()
+            s.backend != "endpoint-security" && !v["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "ui-port-deny")) && agentacl_core::proc::facts(s.supervisor_pid).is_some()
         })
         .map(|s| s.session_id)
         .collect()

@@ -24,6 +24,15 @@ pub struct SessionRecord {
     pub exit_code: Option<i32>,
 }
 
+impl SessionRecord {
+    /// The process whose life is the session's: the supervisor for
+    /// `agentacl run`, the agent itself for Endpoint Security sessions.
+    pub fn liveness_pid(&self) -> Option<i32> {
+        let pid = if self.backend == "endpoint-security" { self.agent_pid.unwrap_or(0) } else { self.supervisor_pid };
+        (pid > 0).then_some(pid)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EventQuery {
     pub session: Option<String>,

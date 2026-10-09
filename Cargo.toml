@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agentacl-policy", "crates/agentacl-core", "crates/agentacl-cli"]
+members = ["crates/agentacl-policy", "crates/agentacl-core", "crates/agentacl-cli", "crates/agentacl-es"]
 
 [workspace.package]
 version = "0.4.0"

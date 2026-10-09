@@ -18,6 +18,10 @@ use tiny_http::Method;
 type Reply = Result<(u16, Value)>;
 
 pub fn dispatch(st: &Arc<UiState>, m: &Method, path: &str, q: &HashMap<String, String>, body: &Value) -> Reply {
+    // Decisions of the Endpoint Security daemon, if it runs (cheap when idle).
+    if *m == Method::Get {
+        let _ = agentacl_core::es_journal::ingest(&st.paths, &st.store.lock().unwrap());
+    }
     match (m, path) {
         (Method::Get, "/api/overview") => overview(st),
         (Method::Get, "/api/status") => status(st),
@@ -372,7 +376,7 @@ fn session_list(st: &Arc<UiState>) -> Result<Vec<Value>> {
     let store = st.store.lock().unwrap();
     let mut out = vec![];
     for s in store.active_sessions()? {
-        if proc::facts(s.supervisor_pid).is_none() {
+        if s.liveness_pid().and_then(proc::facts).is_none() {
             store.end_session(&s.session_id, &agentacl_core::audit::now_rfc3339(), None)?;
             continue;
         }

@@ -195,6 +195,14 @@ MCP servers on other ports need an explicit `network.allow: ["localhost:PORT"]`.
 
 ## 3. What requires Endpoint Security
 
+A first version of this backend is in `crates/agentacl-es` (the
+`agentacl-esd` daemon), not yet run on a real Endpoint Security client. It
+differs from the design below: it reads policies from disk and journals
+decisions to a file rather than using XPC snapshots, and it doesn't enforce
+network rules. See [design/endpoint-security.md](design/endpoint-security.md)
+for what it does, what is tested, its known gaps and what has to be
+verified.
+
 ES is Apple's kernel-backed, user-space security API (`EndpointSecurity.framework`,
 macOS 10.15+). A client subscribes to **AUTH** events, which the kernel holds
 until the client allows or denies them, and to **NOTIFY** events, which are

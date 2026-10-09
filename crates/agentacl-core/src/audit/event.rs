@@ -116,6 +116,11 @@ impl EnforcedEvent {
         let (action, resource) = crate::observe::sandbox_log::describe(d);
         EnforcedEvent { source: EventSource::SandboxLog, pid: Some(d.pid()), delegation_chain: chain, action, resource, decision, count }
     }
+    /// A decision of the Endpoint Security daemon, read from its journal in
+    /// the state directory (written as the user, unwritable by agents).
+    pub(crate) fn endpoint_security(pid: Option<i32>, chain: Vec<String>, action: String, resource: String, decision: Decision) -> Self {
+        EnforcedEvent { source: EventSource::Es, pid, delegation_chain: chain, action, resource, decision, count: 1 }
+    }
     /// Proxy decision (the proxy connected or refused).
     pub(crate) fn proxy(action: String, resource: String, decision: Decision) -> Self {
         EnforcedEvent { source: EventSource::Proxy, pid: None, delegation_chain: vec![], action, resource, decision, count: 1 }

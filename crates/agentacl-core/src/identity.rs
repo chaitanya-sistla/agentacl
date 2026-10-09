@@ -58,6 +58,13 @@ pub fn resolve_project(cwd: &Path, override_: Option<&Path>, home: &Path) -> Res
     Ok(project)
 }
 
+/// The repository `cwd` is in, found by walking up to a `.git` entry,
+/// without running git (the Endpoint Security daemon can't wait on a child
+/// process, and git as root refuses a user's repository).
+pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors().find(|d| std::fs::symlink_metadata(d.join(".git")).is_ok()).map(Path::to_path_buf)
+}
+
 fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
     let out = Command::new("/usr/bin/git").arg("-C").arg(cwd).args(["rev-parse", "--show-toplevel"]).output().ok()?;
     if !out.status.success() {
@@ -81,6 +88,7 @@ mod tests {
         std::fs::create_dir_all(repo.join("sub")).unwrap();
         assert!(Command::new("/usr/bin/git").arg("-C").arg(&repo).arg("init").arg("-q").status().unwrap().success());
         assert_eq!(resolve_project(&repo.join("sub"), None, &home).unwrap(), repo);
+        assert_eq!(repo_root(&repo.join("sub")), Some(repo.clone()));
         // non-git dir → cwd
         let plain = home.join("plain");
         std::fs::create_dir_all(&plain).unwrap();

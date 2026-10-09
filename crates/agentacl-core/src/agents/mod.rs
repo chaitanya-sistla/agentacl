@@ -146,8 +146,20 @@ pub(crate) fn sig_matches(sig: Option<&CodeSignature>, team: &str, signing_ids: 
     (t == team && signing_ids.contains(&id)).then(|| Evidence::Signature { team_id: t.into(), signing_id: id.into() })
 }
 
+static NO_FILE_READS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Identifies agents without reading files (no versions from
+/// `package.json`): for the Endpoint Security daemon, which decides within a
+/// deadline and must not read a path a process chose (a FIFO blocks).
+pub fn identify_without_file_reads() {
+    NO_FILE_READS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Reads `version` from the nearest `package.json` at or above `start` inside a package named `pkg`.
 pub(crate) fn npm_version(start: &str, pkg: &str) -> Option<String> {
+    if NO_FILE_READS.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
     let idx = start.find(pkg)?;
     let root = &start[..idx + pkg.len()];
     let text = std::fs::read_to_string(Path::new(root).join("package.json")).ok()?;
