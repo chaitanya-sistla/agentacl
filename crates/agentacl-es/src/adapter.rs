@@ -149,6 +149,13 @@ fn copy_destination(e: &EventCopyFile<'_>) -> String {
     }
 }
 
+/// `AGENTACL_ESD_DEBUG=1`: log every decision but opens, forks and exits
+/// (development only; it is a lot).
+fn debug() -> bool {
+    static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEBUG.get_or_init(|| std::env::var_os("AGENTACL_ESD_DEBUG").is_some_and(|v| v == "1"))
+}
+
 /// Decides and answers one message. Every AUTH message gets an answer, even
 /// if deciding panics (ES would otherwise stall the request and then kill
 /// the daemon): a bug must never wedge the Mac, so the answer is then allow.
@@ -162,6 +169,13 @@ pub fn handle<P: PolicyProvider>(client: &mut endpoint_sec::Client<'_>, m: Messa
         }
         Some(v)
     }));
+    if debug() {
+        if let Ok(Some(_)) = &decided {
+            if let Some(msg) = to_msg(&m).filter(|x| !matches!(x.op, Op::Open { .. } | Op::Fork { .. } | Op::Exit)) {
+                eprintln!("agentacl-esd: {} {:?} -> {:?}", msg.proc.exe, msg.op, decided);
+            }
+        }
+    }
     let verdict = match decided {
         Ok(Some(v)) => v,
         Ok(None) => Verdict::ALLOW,

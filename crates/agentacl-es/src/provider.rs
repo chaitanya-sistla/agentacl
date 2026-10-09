@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 /// How often the rule files are checked for changes, at most.
 const RECHECK: Duration = Duration::from_secs(1);
+/// How often the daemon's loader rechecks every policy it has loaded.
+const TICK: Duration = Duration::from_millis(500);
 /// Larger rule files are refused (a link to `/dev/zero` must not exhaust
 /// the daemon's memory).
 const MAX_FILE: u64 = 1024 * 1024;
@@ -152,15 +154,15 @@ type Key = (String, PathBuf);
 
 #[derive(Default)]
 struct Shared {
-    /// The current set, whether it is only the built-ins (not loaded yet),
-    /// and when a reload was last asked for.
-    sets: HashMap<Key, (Arc<PolicySet>, bool, Instant)>,
+    /// The current set, and whether it is only the built-ins (not loaded
+    /// yet).
+    sets: HashMap<Key, (Arc<PolicySet>, bool)>,
     pending: std::collections::HashSet<Key>,
 }
 
 /// The daemon's provider: answers from memory; a loader thread (acting as
-/// the user) loads policies the first time and reloads them at most
-/// once a second. If the loader is stuck, the last policy keeps applying.
+/// the user) loads policies the first time and rechecks them twice a second.
+/// If the loader is stuck, the last policy keeps applying.
 pub struct AsyncPolicy {
     shared: Arc<(std::sync::Mutex<Shared>, std::sync::Condvar)>,
     tx: std::sync::mpsc::Sender<Key>,
@@ -177,14 +179,37 @@ impl AsyncPolicy {
         let s = shared.clone();
         std::thread::spawn(move || {
             let _ = ready_tx.send(crate::creds::become_user(uid, gid));
-            for (agent, project) in rx {
-                let set = fs.reload(&agent, &project);
-                let (m, cv) = &*s;
-                let mut g = m.lock().unwrap_or_else(|p| p.into_inner());
-                let key = (agent, project);
-                g.pending.remove(&key);
-                g.sets.insert(key, (set, false, Instant::now()));
-                cv.notify_all();
+            // Loads what is asked for, and rechecks every policy it loaded
+            // once a second, so a grant applies to the agent's next attempt.
+            // On a schedule, not on a quiet queue: requests keep coming.
+            let mut known: Vec<Key> = vec![];
+            let mut last = Instant::now();
+            loop {
+                let wait = TICK.saturating_sub(last.elapsed());
+                let mut keys = match rx.recv_timeout(wait) {
+                    Ok(key) => {
+                        if !known.contains(&key) {
+                            known.push(key.clone());
+                        }
+                        vec![key]
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => vec![],
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                };
+                if last.elapsed() >= TICK {
+                    keys.extend(known.iter().cloned());
+                    last = Instant::now();
+                }
+                for key in keys {
+                    let set = fs.reload(&key.0, &key.1);
+                    let (m, cv) = &*s;
+                    let mut g = m.lock().unwrap_or_else(|p| p.into_inner());
+                    g.pending.remove(&key);
+                    if !g.sets.get(&key).is_some_and(|(cur, builtins_only)| !builtins_only && Arc::ptr_eq(cur, &set)) {
+                        g.sets.insert(key, (set, false));
+                    }
+                    cv.notify_all();
+                }
             }
         });
         ready_rx.recv()??;
@@ -203,12 +228,9 @@ impl PolicyProvider for AsyncPolicy {
                 let _ = tx.send(key.clone());
             }
         };
-        if let Some((set, builtins_only, asked)) = g.sets.get(&key).cloned() {
-            if builtins_only || asked.elapsed() >= RECHECK {
+        if let Some((set, builtins_only)) = g.sets.get(&key).cloned() {
+            if builtins_only {
                 ask(&mut g, &self.tx);
-                if let Some(e) = g.sets.get_mut(&key) {
-                    e.2 = Instant::now();
-                }
             }
             return set;
         }
@@ -220,7 +242,7 @@ impl PolicyProvider for AsyncPolicy {
         // Not loaded in time (the loader may be stuck on a file): the
         // built-in protections, until it is.
         let set = Arc::new((self.fallback)(project));
-        g.sets.insert(key, (set.clone(), true, Instant::now()));
+        g.sets.insert(key, (set.clone(), true));
         set
     }
 }

@@ -6,6 +6,8 @@
 #
 #   scripts/es/install-dev.sh            build, sign ad hoc, install, start
 #   scripts/es/install-dev.sh --dry-run  print what it would do
+#   ESD_BIN=path scripts/es/install-dev.sh   use a prebuilt agentacl-esd
+#                                            (a VM without Rust)
 set -euo pipefail
 dry=0
 [[ "${1:-}" == "--dry-run" ]] && dry=1
@@ -21,14 +23,20 @@ if [[ "$(id -u)" == 0 ]]; then
 fi
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-bin="$root/target/release/agentacl-esd"
+bin="${ESD_BIN:-$root/target/release/agentacl-esd}"
 ent="$root/packaging/macos/es/agentacl-esd.entitlements"
 plist="$root/packaging/macos/es/ai.agentacl.esd.plist"
 conf_dir="/Library/Application Support/AgentACL"
 
-run cargo build --release --locked -p agentacl-es --manifest-path "$root/Cargo.toml"
+if [[ -z "${ESD_BIN:-}" ]]; then
+  run cargo build --release --locked -p agentacl-es --manifest-path "$root/Cargo.toml"
+fi
 # Ad-hoc signature with the ES entitlement: accepted only with AMFI off.
-run codesign --force --sign - --entitlements "$ent" "$bin"
+# Signed on a copy, so a read-only source (a shared folder) works.
+signed="$(mktemp -d)/agentacl-esd"
+run cp "$bin" "$signed"
+run codesign --force --sign - --entitlements "$ent" "$signed"
+bin="$signed"
 
 # The daemon's config: this user, home and temp folder. Written root-owned so
 # agents (running as this user) can't re-point it.
