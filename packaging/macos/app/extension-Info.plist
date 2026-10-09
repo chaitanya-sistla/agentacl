@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>ai.agentacl.app.esd</string>
+  <key>CFBundleName</key><string>AgentACL Endpoint Security</string>
+  <key>CFBundleExecutable</key><string>ai.agentacl.app.esd</string>
+  <key>CFBundlePackageType</key><string>SYSX</string>
+  <key>CFBundleShortVersionString</key><string>VERSION</string>
+  <key>CFBundleVersion</key><string>VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSEndpointSecurityMachServiceName</key><string>TEAMID.ai.agentacl.app.esd.xpc</string>
+  <key>NSSystemExtensionUsageDescription</key>
+  <string>AgentACL enforces your rules for every AI coding agent on this Mac, however it was started.</string>
+</dict>
+</plist>
