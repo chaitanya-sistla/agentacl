@@ -7,8 +7,9 @@ use agentacl_fleet::{EnrollRequest, EnrollResponse, Report, ReportResponse};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-/// Enrollments allowed per minute (all tokens together).
-const ENROLLS_PER_MINUTE: usize = 10;
+/// Failed enrollments allowed per client per minute (a valid token is never
+/// held up by someone else's junk).
+const ENROLL_FAILURES_PER_MINUTE: usize = 10;
 /// Report requests per device per minute (a cycle sends up to 10).
 const REPORTS_PER_MINUTE: usize = 12;
 /// Events stored per device per day; more are dropped (and counted).
@@ -20,7 +21,7 @@ const MAX_RUNNING: usize = 500;
 
 #[derive(Default)]
 pub struct Rates {
-    enrolls: Vec<Instant>,
+    enroll_failures: std::collections::HashMap<String, Vec<Instant>>,
     reports: std::collections::HashMap<String, Vec<Instant>>,
 }
 
@@ -48,9 +49,25 @@ fn device(app: &App, auth: Option<&str>) -> Result<String, Reply> {
     }
 }
 
-pub fn handle(app: &App, method: &str, path: &str, auth: Option<&str>, body: &[u8]) -> Reply {
+pub fn handle(app: &App, method: &str, path: &str, auth: Option<&str>, body: &[u8], client: &str) -> Reply {
     match (method, path) {
-        ("POST", agentacl_fleet::ENROLL) => enroll(app, body),
+        ("POST", agentacl_fleet::ENROLL) => {
+            {
+                let mut r = app.rates.lock().unwrap_or_else(|p| p.into_inner());
+                let f = r.enroll_failures.entry(client.to_string()).or_default();
+                f.retain(|t| t.elapsed() < Duration::from_secs(60));
+                if f.len() >= ENROLL_FAILURES_PER_MINUTE {
+                    return err(429, "too many failed enrollments; try again in a minute");
+                }
+            }
+            let reply = enroll(app, body);
+            if reply.0 != 200 {
+                let mut r = app.rates.lock().unwrap_or_else(|p| p.into_inner());
+                r.enroll_failures.retain(|_, v| v.iter().any(|t| t.elapsed() < Duration::from_secs(60)));
+                r.enroll_failures.entry(client.to_string()).or_default().push(Instant::now());
+            }
+            reply
+        }
         ("POST", agentacl_fleet::REPORT) => report(app, auth, body),
         ("GET", agentacl_fleet::POLICY) => match device(app, auth) {
             Ok(_) => match app.db.lock().unwrap_or_else(|p| p.into_inner()).policy() {
@@ -64,14 +81,6 @@ pub fn handle(app: &App, method: &str, path: &str, auth: Option<&str>, body: &[u
 }
 
 fn enroll(app: &App, body: &[u8]) -> Reply {
-    {
-        let mut r = app.rates.lock().unwrap_or_else(|p| p.into_inner());
-        r.enrolls.retain(|t| t.elapsed() < Duration::from_secs(60));
-        if r.enrolls.len() >= ENROLLS_PER_MINUTE {
-            return err(429, "too many enrollments; try again in a minute");
-        }
-        r.enrolls.push(Instant::now());
-    }
     let Ok(req) = serde_json::from_slice::<EnrollRequest>(body) else { return err(400, "bad enrollment request") };
     let m = &req.machine;
     if [&m.machine_id, &m.hostname, &m.os_version, &m.agentacl_version].iter().any(|v| v.is_empty() || v.len() > 256) || m.serial.as_ref().is_some_and(|s| s.len() > 256) {
@@ -184,6 +193,9 @@ fn report(app: &App, auth: Option<&str>, body: &[u8]) -> Reply {
     }
     if let Err(e) = db.store_report(&id, &rep, now) {
         return err(500, &e.to_string());
+    }
+    if dropped > 0 {
+        let _ = db.add_dropped(&id, dropped as u64);
     }
     let policy_version = db.policy().map(|p| p.version).unwrap_or(0);
     (200, serde_json::to_value(ReportResponse { policy_version, dropped: dropped as u64 }).unwrap_or_default())

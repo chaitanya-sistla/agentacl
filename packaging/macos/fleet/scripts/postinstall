@@ -4,9 +4,9 @@
 set -euo pipefail
 R="/Library/Application Support/AgentACL"
 P=/Library/LaunchDaemons/ai.agentacl.fleet.plist
-chown root:wheel "$R" "$R/bin" "$R/bin/agentacl" "$P"
+chown root:wheel "$R" "$R/bin" "$R/bin/agentacl"
 chmod 755 "$R" "$R/bin" "$R/bin/agentacl"
-chmod 644 "$P"
+install -m 644 -o root -g wheel "$(dirname "$0")/ai.agentacl.fleet.plist" "$P"
 if [[ -f "$R/enroll.json" ]]; then
   chown root:wheel "$R/enroll.json"
   chmod 600 "$R/enroll.json"

@@ -187,9 +187,10 @@ digest, and can be silenced.
 For a company: a package from your device management enrolls each Mac with
 a server you host (`agentacl-server`, one container behind Caddy). The
 server shows every Mac, its users, the agents they run (and whether they
-run under AgentACL), and what was refused; company rules (denies only)
-apply on every Mac and nothing on the Mac can lift them. Decisions stay on
-the Mac. See [docs/fleet.md](docs/fleet.md).
+run under AgentACL), and what was refused. Company rules (denies only)
+apply in every AgentACL session on every Mac (and to every agent, with
+Endpoint Security), and nothing on the Mac can lift them. Decisions stay
+on the Mac. See [docs/fleet.md](docs/fleet.md).
 
 ## A real Claude Code session
 

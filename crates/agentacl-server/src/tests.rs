@@ -12,7 +12,7 @@ fn app() -> (tempfile::TempDir, App) {
     let d = db::Db::open(&t.path().join("s.db")).unwrap();
     d.set_meta("admin_password", &hash_password(PASSWORD)).unwrap();
     let config = Config { public_url: "https://fleet.test".into(), trusted_proxies: vec!["127.0.0.1".into()], insecure_cookies: false, retention_days: 90 };
-    (t, App { db: Mutex::new(d), throttle: Mutex::default(), rates: Mutex::default(), config })
+    (t, App { db: Mutex::new(d), throttle: Mutex::default(), rates: Mutex::default(), password_check: Mutex::default(), config })
 }
 
 fn token(app: &App, max: i64) -> String {
@@ -27,11 +27,11 @@ fn machine(id: &str, host: &str) -> MachineIdentity {
 }
 
 fn enroll(app: &App, token: &str, m: &MachineIdentity) -> (u16, serde_json::Value) {
-    api::handle(app, "POST", agentacl_fleet::ENROLL, None, serde_json::json!({ "token": token, "machine": m }).to_string().as_bytes())
+    api::handle(app, "POST", agentacl_fleet::ENROLL, None, serde_json::json!({ "token": token, "machine": m }).to_string().as_bytes(), "198.51.100.1")
 }
 
 fn report(app: &App, key: &str, r: &Report) -> (u16, serde_json::Value) {
-    api::handle(app, "POST", agentacl_fleet::REPORT, Some(&format!("Bearer {key}")), serde_json::to_string(r).unwrap().as_bytes())
+    api::handle(app, "POST", agentacl_fleet::REPORT, Some(&format!("Bearer {key}")), serde_json::to_string(r).unwrap().as_bytes(), "198.51.100.1")
 }
 
 fn event(rowid: i64, resource: &str) -> EventInfo {
@@ -80,9 +80,9 @@ fn enrollment_reports_and_policy() {
 
     // Company policy: only explicit denies; the Mac gets it.
     let v = app.db.lock().unwrap().save_policy("version: v1\nfilesystem:\n  deny_read: [\"${HOME}/x/**\"]\n", 1).unwrap();
-    let (s, p) = api::handle(&app, "GET", agentacl_fleet::POLICY, Some(&format!("Bearer {}", e.device_key)), b"");
+    let (s, p) = api::handle(&app, "GET", agentacl_fleet::POLICY, Some(&format!("Bearer {}", e.device_key)), b"", "198.51.100.1");
     assert_eq!((s, p["version"].as_u64()), (200, Some(v)));
-    assert_eq!(api::handle(&app, "GET", agentacl_fleet::POLICY, None, b"").0, 401);
+    assert_eq!(api::handle(&app, "GET", agentacl_fleet::POLICY, None, b"", "198.51.100.1").0, 401);
 }
 
 #[test]
@@ -111,11 +111,14 @@ fn enrolling_again_never_takes_over_a_device_and_revocation_sticks() {
 fn rate_limits() {
     let (_t, app) = app();
     let tok = token(&app, 100);
-    let mut last = 0;
-    for i in 0..11 {
-        last = enroll(&app, &tok, &machine(&format!("m{i}"), "h")).0;
+    for i in 0..12 {
+        assert_eq!(enroll(&app, &tok, &machine(&format!("m{i}"), "h")).0, 200, "valid enrollments aren't limited");
     }
-    assert_eq!(last, 429, "the 11th enrollment in a minute");
+    let junk: Vec<u16> = (0..11).map(|_| enroll(&app, "aet_junk", &machine("j", "h")).0).collect();
+    assert_eq!(junk[9], 403);
+    assert_eq!(junk[10], 429, "the 11th failure in a minute, from this client");
+    let other = api::handle(&app, "POST", agentacl_fleet::ENROLL, None, serde_json::json!({ "token": tok, "machine": machine("k", "h") }).to_string().as_bytes(), "203.0.113.50");
+    assert_eq!(other.0, 200, "another client isn't held up");
     app.rates.lock().unwrap().clear();
     let e: EnrollResponse = serde_json::from_value(enroll(&app, &tok, &machine("mx", "h")).1).unwrap();
     let r = Report::default();
@@ -167,6 +170,8 @@ fn console_access_csrf_and_escaping() {
     assert_eq!(web::handle(&app, &bad).status, 403);
     let no_pw = web::handle(&app, &req("POST", "/policy", &[("csrf", &csrf), ("yaml", "version: v1\n"), ("password", "x")], Some(&id)));
     assert!(no_pw.body.contains("Wrong admin password"));
+    // A wrong password counts like a failed sign-in (slowed); wait it out.
+    app.throttle.lock().unwrap().succeeded("203.0.113.9");
     let allow = web::handle(&app, &req("POST", "/policy", &[("csrf", &csrf), ("yaml", "version: v1\nnetwork:\n  allow: [\"x.com\"]\n"), ("password", PASSWORD)], Some(&id)));
     assert!(allow.body.contains("Not published") && allow.body.contains("network.allow"), "company rules only forbid");
     let ok = web::handle(&app, &req("POST", "/policy", &[("csrf", &csrf), ("yaml", "version: v1\nprocess:\n  deny: [\"git push *\"]\n"), ("password", PASSWORD)], Some(&id)));

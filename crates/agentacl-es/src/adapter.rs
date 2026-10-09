@@ -79,6 +79,7 @@ fn proc_of(p: &Process<'_>, msg_version: u32) -> Proc {
         signing_id: lossy(p.signing_id()),
         team_id: lossy(p.team_id()),
         platform_binary: p.is_platform_binary(),
+        cs_flags: p.codesigning_flags(),
     }
 }
 

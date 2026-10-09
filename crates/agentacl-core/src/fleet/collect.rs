@@ -142,22 +142,32 @@ pub struct UserRequest {
     pub discover: bool,
 }
 
-/// Replaces values that look like secrets in a command line, and cuts it.
+/// Replaces values that look like secrets in a command line, and cuts it:
+/// values of `--token`, `--password`, `--secret`, `-u user:pass`,
+/// `Authorization:` headers, `*KEY=`/`*TOKEN=` style assignments, and words
+/// that look like well-known API keys.
 pub fn redact(s: &str) -> String {
     const MARKERS: [&str; 6] = ["token", "password", "passwd", "secret", "apikey", "api-key"];
+    const PREFIXES: [&str; 9] = ["sk-", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "xoxb-", "xoxp-", "AKIA"];
     let mut out: Vec<String> = vec![];
     let mut hide_next = false;
     for word in s.split(' ') {
         if hide_next {
             out.push("[redacted]".into());
-            hide_next = false;
+            // `Authorization: Bearer <token>`: the scheme, then its value.
+            hide_next = matches!(word.trim_matches(['"', '\'']).to_ascii_lowercase().as_str(), "bearer" | "basic" | "token");
             continue;
         }
-        let lower = word.to_ascii_lowercase();
+        let bare = word.trim_matches(['"', '\'']);
+        let lower = bare.to_ascii_lowercase();
+        if PREFIXES.iter().any(|p| bare.starts_with(p) && bare.len() > p.len() + 8) {
+            out.push("[redacted]".into());
+            continue;
+        }
         let secretish = MARKERS.iter().any(|m| lower.contains(m)) || lower.contains("_key") || lower.ends_with("key");
-        match word.split_once('=') {
+        match bare.split_once('=') {
             Some((k, _)) if secretish && MARKERS.iter().chain(&["key"]).any(|m| k.to_ascii_lowercase().contains(m)) => out.push(format!("{k}=[redacted]")),
-            None if secretish && word.starts_with('-') => {
+            None if (secretish && bare.starts_with('-')) || matches!(lower.as_str(), "-u" | "--user" | "authorization:" | "bearer" | "basic" | "token") => {
                 out.push(word.into());
                 hide_next = true;
             }
@@ -249,12 +259,39 @@ pub fn collect_user_at(paths: &crate::config::Paths, req: &UserRequest) -> UserR
     r
 }
 
+/// Caps what one user's report may take, so one user can't crowd out the
+/// others (or make the whole report too large): lists are cut, and events
+/// dropped from the end until it fits in `limit` bytes (the cursor then
+/// stops at the last event kept).
+pub fn fit_user(u: &mut UserReport, limit: usize) {
+    if let Some(i) = &mut u.installed {
+        i.truncate(100);
+    }
+    u.sessions.truncate(500);
+    if let Some(e) = &mut u.error {
+        if let Some((i, _)) = e.char_indices().nth(2048) {
+            e.truncate(i);
+        }
+    }
+    while serde_json::to_vec(u).map(|b| b.len()).unwrap_or(usize::MAX) > limit {
+        if !u.events.is_empty() {
+            let keep = u.events.len() / 2;
+            u.events.truncate(keep);
+        } else if !u.sessions.is_empty() || u.installed.is_some() {
+            u.sessions.clear();
+            u.installed = None;
+            u.error = Some("this user's AgentACL data is too large to report".into());
+        } else {
+            break;
+        }
+    }
+}
+
 /// Collects `user`'s report in a child process running as that user: its
-/// groups, gid and uid set before exec, an empty environment but HOME,
+/// primary group as the only group, its gid and uid, set before exec, an empty environment but HOME,
 /// USER, LOGNAME and a PATH with the usual install folders, in the user's
 /// home. Killed after 90 seconds.
 pub fn spawn_collector(exe: &Path, name: &str, uid: u32, gid: u32, home: &Path, req: &UserRequest, test_env: &[(String, String)]) -> Result<UserReport> {
-    let cname = CString::new(name)?;
     let h = home.to_string_lossy();
     let path = format!("{h}/.local/bin:{h}/.npm-global/bin:{h}/.bun/bin:{h}/.volta/bin:{h}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
     let mut cmd = Command::new(exe);
@@ -266,20 +303,29 @@ pub fn spawn_collector(exe: &Path, name: &str, uid: u32, gid: u32, home: &Path, 
     if !root && uid != unsafe { libc::getuid() } {
         bail!("collecting another user's data needs root");
     }
-    // SAFETY: only async-signal-safe calls between fork and exec.
-    if root {
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::initgroups(cname.as_ptr(), gid as _) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // Never back to root.
-                if libc::setuid(0) == 0 {
-                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
-                }
-                Ok(())
-            });
-        }
+    // Only the user's primary group: the collector reads the user's own
+    // files and needs no other (and nothing is looked up after the fork).
+    let groups: [libc::gid_t; 1] = [gid];
+    // SAFETY: the closure makes only async-signal-safe calls, on data
+    // prepared before the fork.
+    unsafe {
+        cmd.pre_exec(move || {
+            // Its own process group: a timeout kills everything it started.
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if !root {
+                return Ok(());
+            }
+            if libc::setgroups(groups.len() as libc::c_int, groups.as_ptr()) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Never back to root.
+            if libc::setuid(0) == 0 {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            Ok(())
+        });
     }
     let mut child = cmd.spawn().with_context(|| format!("collecting {name}'s data"))?;
     child.stdin.take().context("stdin")?.write_all(&serde_json::to_vec(req)?)?;
@@ -290,16 +336,29 @@ pub fn spawn_collector(exe: &Path, name: &str, uid: u32, gid: u32, home: &Path, 
         out
     });
     let start = Instant::now();
+    let pgid = child.id() as libc::pid_t;
     loop {
         if child.try_wait()?.is_some() {
             break;
         }
         if start.elapsed() > USER_TIMEOUT {
-            let _ = child.kill();
+            // SAFETY: signals the collector's own process group.
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
             let _ = child.wait();
             bail!("collecting {name}'s data took longer than {} s", USER_TIMEOUT.as_secs());
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+    // Anything it left running keeps the pipe open: end the group, and don't
+    // wait for the reader forever.
+    // SAFETY: as above.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !reader.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !reader.is_finished() {
+        bail!("{name}'s collector left its output open");
     }
     let out = reader.join().map_err(|_| anyhow::anyhow!("reading {name}'s data"))?;
     if out.len() as u64 > USER_MAX_OUTPUT {
@@ -322,7 +381,22 @@ mod tests {
         assert_eq!(redact("deploy --password=hunter2 --env prod"), "deploy --password=[redacted] --env prod");
         assert_eq!(redact("env AWS_SECRET_ACCESS_KEY=AKIAx OPENAI_API_KEY=sk-1 node x"), "env AWS_SECRET_ACCESS_KEY=[redacted] OPENAI_API_KEY=[redacted] node x");
         assert_eq!(redact("cat /Users/a/.ssh/id_ed25519"), "cat /Users/a/.ssh/id_ed25519");
+        assert_eq!(redact("curl -u alice:hunter2 https://x"), "curl -u [redacted] https://x");
+        assert_eq!(redact("curl -H \"Authorization: Bearer abc.def\" https://x"), "curl -H \"Authorization: [redacted] [redacted] https://x");
+        assert_eq!(redact("echo sk-ant-api03-abcdefghijk ghp_1234567890abcdef"), "echo [redacted] [redacted]");
         assert_eq!(redact(&"x".repeat(2000)).chars().count(), MAX_RESOURCE + 1);
+    }
+
+    #[test]
+    fn one_user_cant_crowd_out_the_report() {
+        let ev = |i: i64| EventInfo { rowid: i, resource: "x".repeat(900), ..Default::default() };
+        let mut u = UserReport { events: (1..=1000).map(ev).collect(), sessions: vec![SessionInfo::default(); 900], ..Default::default() };
+        fit_user(&mut u, 200_000);
+        assert!(serde_json::to_vec(&u).unwrap().len() <= 200_000);
+        assert!(u.sessions.len() <= 500 && !u.events.is_empty() && u.events[0].rowid == 1, "oldest events kept");
+        let mut huge = UserReport { sessions: vec![SessionInfo { project: "p".repeat(10_000), ..Default::default() }; 400], ..Default::default() };
+        fit_user(&mut huge, 100_000);
+        assert!(huge.sessions.is_empty() && huge.error.is_some());
     }
 
     #[test]

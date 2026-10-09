@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS devices (
   hostname TEXT NOT NULL, serial TEXT, os_version TEXT NOT NULL,
   agentacl_version TEXT NOT NULL, token_id INTEGER, enrolled_at INTEGER NOT NULL,
   last_seen INTEGER, revoked INTEGER NOT NULL DEFAULT 0,
-  status_json TEXT, running_json TEXT);
+  status_json TEXT, running_json TEXT, dropped INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS devices_machine ON devices(machine_id);
 CREATE TABLE IF NOT EXISTS blocked_machines (machine_id TEXT PRIMARY KEY, since INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS device_users (
@@ -58,6 +58,8 @@ pub struct Device {
     pub last_seen: Option<i64>,
     pub revoked: bool,
     pub report: Option<Report>,
+    /// Events not kept because the device went over its daily quota.
+    pub dropped: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -241,7 +243,7 @@ impl Db {
 
     pub fn devices(&self) -> Result<Vec<Device>> {
         let mut st = self.conn.prepare(
-            "SELECT id, machine_id, hostname, serial, os_version, agentacl_version, enrolled_at, last_seen, revoked, status_json, running_json FROM devices ORDER BY hostname COLLATE NOCASE, id",
+            "SELECT id, machine_id, hostname, serial, os_version, agentacl_version, enrolled_at, last_seen, revoked, status_json, running_json, dropped FROM devices ORDER BY hostname COLLATE NOCASE, id",
         )?;
         let rows = st.query_map([], row_device)?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -250,7 +252,11 @@ impl Db {
     pub fn device(&self, id: &str) -> Result<Option<Device>> {
         Ok(self
             .conn
-            .query_row("SELECT id, machine_id, hostname, serial, os_version, agentacl_version, enrolled_at, last_seen, revoked, status_json, running_json FROM devices WHERE id = ?1", [id], row_device)
+            .query_row(
+                "SELECT id, machine_id, hostname, serial, os_version, agentacl_version, enrolled_at, last_seen, revoked, status_json, running_json, dropped FROM devices WHERE id = ?1",
+                [id],
+                row_device,
+            )
             .optional()?)
     }
 
@@ -316,6 +322,11 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    pub fn add_dropped(&self, device: &str, n: u64) -> Result<()> {
+        self.conn.execute("UPDATE devices SET dropped = dropped + ?2 WHERE id = ?1", params![device, n as i64])?;
+        Ok(())
+    }
+
     pub fn prune_events(&self, before: i64) -> Result<usize> {
         Ok(self.conn.execute("DELETE FROM events WHERE received < ?1", [before])?)
     }
@@ -359,5 +370,6 @@ fn row_device(r: &rusqlite::Row) -> rusqlite::Result<Device> {
         last_seen: r.get(7)?,
         revoked: r.get::<_, i64>(8)? != 0,
         report,
+        dropped: r.get(11)?,
     })
 }

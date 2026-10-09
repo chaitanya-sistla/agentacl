@@ -26,6 +26,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
 
+/// Requests handled at once; more get 503.
+const MAX_CONNECTIONS: usize = 256;
+
 pub struct Config {
     /// The URL Macs use to reach the server (shown in enrollment commands).
     pub public_url: String,
@@ -39,6 +42,8 @@ pub struct App {
     pub db: Mutex<db::Db>,
     pub throttle: Mutex<auth::Throttle>,
     pub rates: Mutex<api::Rates>,
+    /// One password check at a time.
+    pub password_check: Mutex<()>,
     pub config: Config,
 }
 
@@ -116,7 +121,7 @@ fn serve_one(app: &App, mut req: tiny_http::Request) {
         return;
     }
     if path.starts_with("/api/") {
-        let (status, v) = api::handle(app, &method, &path, auth.as_deref(), &body);
+        let (status, v) = api::handle(app, &method, &path, auth.as_deref(), &body, &client);
         let r = Response::from_string(v.to_string()).with_status_code(status).with_header(header("Content-Type", "application/json")).with_header(header("Cache-Control", "no-store"));
         let _ = req.respond(r);
         return;
@@ -189,7 +194,7 @@ fn run() -> Result<()> {
                 eprintln!("agentacl-server: admin password set from AGENTACL_SERVER_ADMIN_PASSWORD_FILE");
             }
             let server = Arc::new(Server::http(&a.listen).map_err(|e| anyhow::anyhow!("listening on {}: {e}", a.listen))?);
-            let app = Arc::new(App { db: Mutex::new(d), throttle: Mutex::default(), rates: Mutex::default(), config: a.config });
+            let app = Arc::new(App { db: Mutex::new(d), throttle: Mutex::default(), rates: Mutex::default(), password_check: Mutex::default(), config: a.config });
             eprintln!("agentacl-server: listening on {} (public URL {})", a.listen, app.config.public_url);
             // Daily pruning of old events.
             let pruner = app.clone();
@@ -200,18 +205,22 @@ fn run() -> Result<()> {
                 }
                 std::thread::sleep(std::time::Duration::from_secs(86_400));
             });
-            let workers: Vec<_> = (0..4)
-                .map(|_| {
-                    let (server, app) = (server.clone(), app.clone());
-                    std::thread::spawn(move || {
-                        for req in server.incoming_requests() {
-                            serve_one(&app, req);
-                        }
-                    })
-                })
-                .collect();
-            for w in workers {
-                let _ = w.join();
+            // A thread per request (bounded): a client that sends its body
+            // slowly holds only its own thread, never the others'. Behind
+            // Caddy, its timeouts bound that too (deploy/fleet/Caddyfile).
+            let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            for req in server.incoming_requests() {
+                use std::sync::atomic::Ordering::SeqCst;
+                if active.fetch_add(1, SeqCst) >= MAX_CONNECTIONS {
+                    active.fetch_sub(1, SeqCst);
+                    let _ = req.respond(Response::from_string("busy").with_status_code(503));
+                    continue;
+                }
+                let (app, active) = (app.clone(), active.clone());
+                std::thread::spawn(move || {
+                    serve_one(&app, req);
+                    active.fetch_sub(1, SeqCst);
+                });
             }
             Ok(())
         }

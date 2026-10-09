@@ -118,7 +118,12 @@ impl FsPolicy {
     /// company rules (if they load; they were validated before they were
     /// written).
     fn builtins_only(&self, project: &Path) -> PolicySet {
-        self.builtins_with(project, self.paths.managed.org_source().ok().flatten())
+        let org = self.paths.managed.org_source().unwrap_or_else(|e| {
+            // Only root can cause this (the file is root's): say so.
+            eprintln!("agentacl-esd: {e:#}; the fallback has no company rules");
+            None
+        });
+        self.builtins_with(project, org)
     }
 
     /// [`FsPolicy::builtins_only`] with company rules already read: no I/O.

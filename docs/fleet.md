@@ -34,7 +34,8 @@ open for the certificate).
 
 ```sh
 git clone https://github.com/chaitanya-sistla/agentacl && cd agentacl/deploy/fleet
-printf '%s\n' 'a long admin password' > admin_password.txt && chmod 600 admin_password.txt
+printf '%s\n' 'a long admin password' > admin_password.txt
+sudo chown 10001 admin_password.txt && sudo chmod 400 admin_password.txt   # the server's user in the container
 FLEET_DOMAIN=fleet.example.com docker compose up -d --build
 ```
 
@@ -70,7 +71,8 @@ echo "$TOKEN" | scripts/fleet/build-pkg.sh --server https://fleet.example.com
 # → target/AgentACL-fleet-<version>.pkg
 ```
 
-It installs `agentacl` root-owned in `/Library/Application Support/AgentACL/bin`
+It installs `agentacl` (signed with the hardened runtime) root-owned in
+`/Library/Application Support/AgentACL/bin`
 (linked from `/usr/local/bin` where that folder is root's), and the
 LaunchDaemon `ai.agentacl.fleet`, which enrolls, then reports every minute.
 
@@ -91,7 +93,7 @@ device management only. Alternatives:
   network needs one). Any local user can read managed preferences.
 - By hand: `echo "$TOKEN" | sudo agentacl fleet enroll --server https://fleet.example.com`.
 
-Check a Mac with `agentacl fleet status`. The service logs to
+Check a Mac with `sudo agentacl fleet status`. The service logs to
 `/var/log/agentacl-fleet.log`. macOS shows "Background Items Added"; to
 stop users switching the service off, push a managed login items profile.
 
@@ -145,10 +147,12 @@ server shows a Mac that stops reporting.
 
 ## 6. Signing (optional, needs Apple)
 
-With an Apple Developer Program membership ($99 a year, no review):
+With an Apple Developer Program membership ($99 a year, no review), sign
+the binary and the package:
 
 ```sh
 echo "$TOKEN" | scripts/fleet/build-pkg.sh --server https://fleet.example.com \
+  --app-sign "Developer ID Application: Your Company (TEAMID)" \
   --sign "Developer ID Installer: Your Company (TEAMID)"
 xcrun notarytool submit target/AgentACL-fleet-*.pkg --keychain-profile notary --wait
 xcrun stapler staple target/AgentACL-fleet-*.pkg

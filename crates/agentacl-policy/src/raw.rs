@@ -231,6 +231,9 @@ pub fn parse_doc(yaml: &str, layer: Layer, source_name: &str) -> Result<RawDoc, 
         }
     }
 
+    if layer != Layer::Org && repr.name.as_deref() == Some("org") {
+        return Err(PolicyError::Invalid { doc: source_name.into(), msg: "the name `org` is reserved for company rules".into() });
+    }
     let s = source_name;
     let doc = RawDoc {
         // Company rules are always named `org`, whatever the file says.

@@ -1,4 +1,20 @@
+{
+	servers {
+		# A client that sends slowly is cut off (the server reads bodies
+		# on its own thread per request; this bounds how long).
+		timeouts {
+			read_header 10s
+			read_body 30s
+			write 60s
+			idle 2m
+		}
+	}
+}
+
 {$FLEET_DOMAIN} {
 	encode gzip
+	request_body {
+		max_size 8MB
+	}
 	reverse_proxy server:8080
 }

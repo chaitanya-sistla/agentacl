@@ -80,8 +80,7 @@ fn login(app: &App, r: &Req) -> Resp {
     if let Some(wait) = app.throttle.lock().unwrap_or_else(|p| p.into_inner()).blocked(&r.client) {
         return html(429, login_page(Some(&format!("Too many attempts. Try again in {} s.", wait.as_secs().max(1)))));
     }
-    let stored = app.db.lock().unwrap_or_else(|p| p.into_inner()).meta("admin_password").ok().flatten();
-    let ok = stored.is_some_and(|h| verify_password(r.form.get("password").map(String::as_str).unwrap_or(""), &h));
+    let ok = check_password(app, r);
     let mut t = app.throttle.lock().unwrap_or_else(|p| p.into_inner());
     if !ok {
         t.failed(&r.client);
@@ -99,10 +98,28 @@ fn login(app: &App, r: &Req) -> Resp {
     resp
 }
 
-/// The admin password again, for the actions that change every Mac.
-fn reauth(app: &App, r: &Req) -> bool {
+/// Checks the form's password, one check at a time (each costs 600,000
+/// hash iterations; parallel guesses mustn't multiply that).
+fn check_password(app: &App, r: &Req) -> bool {
+    let _one = app.password_check.lock().unwrap_or_else(|p| p.into_inner());
     let stored = app.db.lock().unwrap_or_else(|p| p.into_inner()).meta("admin_password").ok().flatten();
     stored.is_some_and(|h| verify_password(r.form.get("password").map(String::as_str).unwrap_or(""), &h))
+}
+
+/// The admin password again, for the actions that change every Mac;
+/// throttled like signing in.
+fn reauth(app: &App, r: &Req) -> bool {
+    if app.throttle.lock().unwrap_or_else(|p| p.into_inner()).blocked(&r.client).is_some() {
+        return false;
+    }
+    let ok = check_password(app, r);
+    let mut t = app.throttle.lock().unwrap_or_else(|p| p.into_inner());
+    if ok {
+        t.succeeded(&r.client);
+    } else {
+        t.failed(&r.client);
+    }
+    ok
 }
 
 fn routes(app: &App, r: &Req, csrf: &str) -> Resp {
@@ -135,7 +152,14 @@ fn routes(app: &App, r: &Req, csrf: &str) -> Resp {
         ("POST", ["tokens"]) => create_token(app, r, csrf),
         ("POST", ["tokens", id, "revoke"]) => {
             let res = id.parse::<i64>().map_err(|e| e.to_string()).and_then(|id| app.db.lock().unwrap_or_else(|p| p.into_inner()).revoke_token(id).map_err(|e| e.to_string()));
-            tokens(app, csrf, Some(res.map(|_| "Token revoked.".to_string()).unwrap_or_else(|e| e)))
+            tokens(
+                app,
+                csrf,
+                Some(match res {
+                    Ok(()) => notice("good", "Token revoked."),
+                    Err(e) => notice("bad", &e),
+                }),
+            )
         }
         _ => html(404, page("Not found", "", Some(csrf), &notice("bad", "Not found."))),
     }
@@ -173,6 +197,9 @@ fn warnings(d: &Device, all: &[Device], users: &[crate::db::DeviceUser], current
         if outside > 0 && !(r.machine.enforcement.es_daemon || r.machine.enforcement.es_extension) {
             w.push(format!("{outside} agent(s) running outside AgentACL"));
         }
+    }
+    if d.dropped > 0 {
+        w.push(format!("{} event(s) over the daily quota weren't kept", d.dropped));
     }
     let without = users.iter().flat_map(|u| &u.sessions).filter(|s| s.ended_at.is_none() && !s.company_rules).count();
     if without > 0 {

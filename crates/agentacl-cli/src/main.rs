@@ -815,6 +815,9 @@ fn fleet(c: FleetCmd) -> Result<i32> {
             if let Some(t) = st.last_report {
                 println!("Last report: {}", agentacl_core::audit::format_rfc3339(t, 0));
             }
+            if st.dropped > 0 {
+                println!("Events the server didn't keep (over the daily quota): {}", st.dropped);
+            }
             for e in [&st.policy_error, &st.last_error].into_iter().flatten() {
                 println!("Problem: {e}");
             }

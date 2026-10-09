@@ -45,8 +45,9 @@ them from one server it hosts:
    AgentACL. With the entitlement (the ES daemon), the file and program
    rules apply to every agent (network rules apply in `agentacl run`
    sessions only). The ES daemon leaves an agent to Seatbelt only when the
-   root-owned copy of `agentacl` launched it; any other `agentacl` gets an
-   ES session like any agent. Users with admin rights can remove AgentACL;
+   root-owned copy of `agentacl`, signed with the hardened runtime (so its
+   user can't inject code into it), launched it; any other `agentacl` gets
+   an ES session like any agent. Users with admin rights can remove AgentACL;
    the server shows a Mac that stops reporting or reports an old policy,
    but can't prevent it.
 4. **Least privilege on the Mac.** The reporting service runs as root to
@@ -109,8 +110,10 @@ enforcing its last company rules. A revoked device's machine id can't
 enroll again until an admin allows it; the machine id is reported by the
 Mac, so this stops a reinstalled Mac, not someone holding a token.
 Anyone holding a token can create devices up to its limit, so the server
-limits enrollments (10 a minute), report requests (12 a minute per
-device), and events stored per device (50,000 a day).
+limits failed enrollments (10 a minute per client), report requests (12 a
+minute per device), and events stored per device (50,000 a day; the
+console shows how many weren't kept). Requests are served on a thread
+each, and Caddy cuts off clients that send slowly.
 
 ### Reporting (every 60 s, and at start)
 
@@ -130,9 +133,9 @@ device), and events stored per device (50,000 a day).
   since the last report (the ES journal is ingested first). These come from
   the user's own files, so the console labels them as reported by the user.
 
-Each report request is at most 4 MiB (users, sessions and events are
-added until the next one would exceed it); a cycle sends up to 10
-requests. The cursor is (audit log id, row id): the audit log gets a random id
+Each report request is at most 4 MiB: each user's part is capped at
+1 MiB (lists cut, then events from the end), then the largest part is
+halved until the request fits; a cycle sends up to 10 requests. The cursor is (audit log id, row id): the audit log gets a random id
 when created, so a deleted and recreated log starts a new cursor. Events
 are unique on the server per (device, user, audit log id, row id), so a
 resent batch isn't stored twice. A report includes full paths and hosts the
@@ -176,7 +179,7 @@ applies to the next session. The ES daemon applies it within a second.
 
 When an `org` layer is present, `builtin.disable` in any other document is
 ignored, so the company can rely on the built-in protections (a user who
-disabled one gets it back; the console says so). The company folder's
+disabled one gets it back, even with an empty company policy). The company folder's
 location is fixed: `AGENTACL_HOME` and `AGENTACL_CONFIG_DIR` don't move it. The ES
 daemon includes the company rules in its built-ins fallback (used when a
 user's policy fails to load), and reloads when the file changes.
@@ -216,7 +219,7 @@ The service calls the server with `/usr/bin/curl`, `-q` first (no
 `.curlrc`), with the system trust store when curl has it
 (`CURL_SSL_BACKEND=secure-transport`, so a company CA installed on the Mac
 is trusted; curl falls back to its own CA list silently, so the service
-checks `curl -V` and reports which one it uses), `--proto =https` (plain
+sets it only when `curl -V` lists SecureTransport), `--proto =https` (plain
 HTTP only to `127.0.0.1`, for tests), no redirects, timeouts, and a
 response size limit enforced while reading. A proxy, if the network needs
 one, is set in `fleet.json`. The device key is in a curl config read from standard input; the
@@ -224,7 +227,8 @@ request body is in a root-only temporary file.
 
 ### Which `agentacl` the users run
 
-The package installs the CLI root-owned in
+The package installs only into AgentACL's own folder (the installer
+resets the owner and modes of folders in a payload), the CLI root-owned in
 `/Library/Application Support/AgentACL/bin` and links
 `/usr/local/bin/agentacl` to it (only if that folder is owned by root; on
 Intel Macs with Homebrew it isn't). A user who also installed AgentACL with
@@ -256,8 +260,9 @@ reported, and the console flags sessions without them.
 
 - Approving a refused request from the server (grants stay local).
 - Company rules that allow, or apply to one agent or project.
-- Signed policy bundles: the policy's integrity rests on TLS, but since
-  company rules can only forbid, a forged policy can only make Macs
-  stricter (or stop agents working).
+- Signed policy bundles: the policy's integrity rests on TLS. Company
+  rules can only forbid, so a forged policy can't make a Mac looser than
+  the user's own policy, but it can remove the company rules or stop
+  agents working.
 - Multi-tenant servers, SSO for admins, role-based admin access.
 - Shipping events to other systems (OpenTelemetry export).

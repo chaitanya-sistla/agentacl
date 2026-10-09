@@ -48,6 +48,8 @@ fn company_rules_may_only_forbid() {
         let e = try_load(vec![org(&format!("version: v1\n{yaml}"))], LoadOptions::default()).unwrap_err();
         assert_eq!(e, PolicyError::OrgForbidden { doc: "managed/policy.yaml".into(), key: key.into() }, "{yaml}");
     }
+    // Only company rules may call themselves `org`.
+    assert!(matches!(try_load(vec![user("version: v1\nname: org\n")], LoadOptions::default()), Err(PolicyError::Invalid { .. })));
     // Explicit denies, and an empty document, load.
     load(vec![org(ORG)]);
     load(vec![org("version: v1\n")]);

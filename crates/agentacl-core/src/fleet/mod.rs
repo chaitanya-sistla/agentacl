@@ -18,6 +18,8 @@ const DISCOVER_EVERY: i64 = 600;
 /// Report requests per cycle (each up to [`REPORT_BYTES`]).
 const MAX_REQUESTS: usize = 10;
 const REPORT_BYTES: usize = 4 * 1024 * 1024;
+/// One user's share of a report request.
+const USER_BYTES: usize = 1024 * 1024;
 
 /// `fleet.json` (root, 0600).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,9 @@ pub struct FleetState {
     pub last_discover: i64,
     pub last_report: Option<i64>,
     pub last_error: Option<String>,
+    /// Events the server didn't keep (over the device's daily quota).
+    #[serde(default)]
+    pub dropped: u64,
 }
 
 /// How a Mac was told to enroll, before it is: a file the package installs
@@ -206,17 +211,21 @@ pub fn cycle(m: &Managed, cfg: &FleetConfig, exe: &Path) -> Result<()> {
             if round > 0 {
                 u.installed = None;
             }
+            // Each user gets a fair share of the request.
+            let before = u.events.len();
+            collect::fit_user(&mut u, USER_BYTES);
+            more |= u.events.len() < before;
             users.push(u);
         }
         let mut report = Report { machine: machine.clone(), running: running.clone(), users };
-        // Keep each request under the size limit: drop events from the end.
+        // Keep each request under the size limit: shrink the largest user.
         while serde_json::to_vec(&report)?.len() > REPORT_BYTES {
-            let Some(u) = report.users.iter_mut().max_by_key(|u| u.events.len()) else { break };
-            if u.events.is_empty() {
+            let sizes: Vec<usize> = report.users.iter().map(|u| serde_json::to_vec(u).map(|b| b.len()).unwrap_or(0)).collect();
+            let Some((i, &size)) = sizes.iter().enumerate().max_by_key(|(_, s)| **s) else { break };
+            if size < 1024 {
                 break;
             }
-            let keep = u.events.len() / 2;
-            u.events.truncate(keep);
+            collect::fit_user(&mut report.users[i], size / 2);
             more = true;
         }
         let (code, out) = client.request("POST", agentacl_fleet::REPORT, Some(&cfg.device_key), Some(&serde_json::to_vec(&report)?))?;
@@ -231,6 +240,7 @@ pub fn cycle(m: &Managed, cfg: &FleetConfig, exe: &Path) -> Result<()> {
         }
         let resp: ReportResponse = serde_json::from_slice(&out).context("the server's report answer")?;
         server_policy = Some(resp.policy_version);
+        state.dropped += resp.dropped;
         // Acknowledged: advance each user's cursor.
         for u in &report.users {
             if let (Some(log), Some(last)) = (&u.log_id, u.events.last()) {

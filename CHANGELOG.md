@@ -26,8 +26,10 @@ section whose heading matches the tag, so every release needs one.
 
 ### Changed
 - The Endpoint Security daemon leaves an agent to Seatbelt only when the
-  root-owned `agentacl` launched it; any other `agentacl` gets an ES
-  session like any agent.
+  root-owned `agentacl` (signed with the hardened runtime) launched it;
+  any other `agentacl` gets an ES session like any agent. On a development
+  ES install, `agentacl run` sessions from another copy are therefore
+  enforced twice, and their `ask` rules are refused at once.
 
 ## [0.5.0] - 2026-10-09
 

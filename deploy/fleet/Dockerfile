@@ -2,6 +2,9 @@
 #   docker build -f deploy/fleet/Dockerfile -t agentacl-server .
 FROM rust:1.85-slim-bookworm AS build
 WORKDIR /src
+# The image's own toolchain, not the repository's pinned one (which would be
+# downloaded with its macOS targets on every build).
+ENV RUSTUP_TOOLCHAIN=1.85
 COPY . .
 RUN cargo build --release --locked -p agentacl-server
 
