@@ -87,7 +87,7 @@ ships a universal binary, per-architecture binaries, `SHA256SUMS` and a
 build-provenance attestation.
 
 ```sh
-V=0.4.0
+V=0.5.0
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing          # must print: OK

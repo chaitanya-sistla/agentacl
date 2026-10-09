@@ -7,6 +7,15 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-09
+
+**Toward protecting every agent, however it was started.** `agentacl run`
+protects the agents AgentACL launches. This release adds a preview of the
+Endpoint Security backend, which applies the same rules to an agent started
+any other way (plain `claude`, an IDE, a desktop app). It is verified on a
+development Mac; it will be switched on for everyone once Apple grants the
+Endpoint Security entitlement. Nothing changes for `agentacl run`.
+
 ### Added
 - **Endpoint Security backend (preview).** `agentacl-esd`, a root daemon
   that applies AgentACL's file and program rules to agents that
