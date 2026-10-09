@@ -207,7 +207,7 @@ fn rule_of(d: &Decision) -> String {
 
 pub fn report(i: &Inputs) -> Result<Report> {
     let has_env = |k: &str| i.env.iter().any(|(n, v)| n == k && !v.is_empty());
-    let (set, reqs) = supervisor::load_policy_with(i.paths, i.agent, i.project, None, i.home, has_env)?;
+    let (set, reqs) = supervisor::load_policy_with(i.paths, i.agent, i.project, None, i.home, has_env, None)?;
     let proj = i.project.to_string_lossy().into_owned();
     let ev = Eval { set: &set, subject: Subject { agent_id: i.agent.into(), project: proj.clone(), ..Default::default() } };
     let mut findings: Vec<Finding> = vec![];

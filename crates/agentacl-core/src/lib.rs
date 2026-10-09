@@ -7,6 +7,7 @@ pub mod audit;
 pub mod config;
 pub mod draft;
 pub mod enforce;
+pub mod es_journal;
 pub mod escape;
 pub mod exposure;
 pub mod fsafe;
