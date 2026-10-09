@@ -211,9 +211,30 @@ pub fn parse_doc(yaml: &str, layer: Layer, source_name: &str) -> Result<RawDoc, 
         }
     }
 
+    if layer == Layer::Org {
+        // Company rules only forbid (docs/design/fleet.md): nothing that
+        // allows, asks, loosens defaults, disables built-ins, or that the
+        // user could steer (`match:` by agent or project).
+        let forbidden = [
+            (!fs.allow_read.is_empty(), "filesystem.allow_read"),
+            (!fs.allow_write.is_empty(), "filesystem.allow_write"),
+            (!pr.allow.is_empty(), "process.allow"),
+            (!pr.require_approval.is_empty(), "process.require_approval"),
+            (!nt.allow.is_empty(), "network.allow"),
+            (!nt.listen.is_empty(), "network.listen"),
+            (repr.builtin.is_some(), "builtin"),
+            (repr.match_.is_some(), "match"),
+            (repr.defaults != RawDefaults::default(), "defaults"),
+        ];
+        if let Some((_, key)) = forbidden.iter().find(|(present, _)| *present) {
+            return Err(PolicyError::OrgForbidden { doc: source_name.into(), key: (*key).into() });
+        }
+    }
+
     let s = source_name;
-    Ok(RawDoc {
-        name: repr.name.unwrap_or_else(|| s.to_string()),
+    let doc = RawDoc {
+        // Company rules are always named `org`, whatever the file says.
+        name: if layer == Layer::Org { "org".into() } else { repr.name.unwrap_or_else(|| s.to_string()) },
         layer,
         match_: repr.match_,
         defaults: repr.defaults,
@@ -234,5 +255,16 @@ pub fn parse_doc(yaml: &str, layer: Layer, source_name: &str) -> Result<RawDoc, 
             listen: convert(s, "network.listen", RuleKind::Host, nt.listen)?,
         },
         builtin: repr.builtin,
-    })
+    };
+    if layer == Layer::Org {
+        // Only absolute paths and ${HOME}: the user chooses the project and
+        // the session's folders, so rules about them could be steered.
+        let rules = doc.filesystem.deny_read.iter().chain(&doc.filesystem.deny_write).chain(&doc.process.deny).chain(&doc.network.deny);
+        for text in rules.flat_map(|r| std::iter::once(&r.pattern).chain(&r.except)) {
+            if let Some(var) = ["${PROJECT}", "${TMPDIR}", "${AGENT_STATE}", "${AGENTACL_STATE}", "${AGENTACL_CONFIG}"].iter().find(|v| text.contains(*v)) {
+                return Err(PolicyError::OrgForbidden { doc: source_name.into(), key: (*var).into() });
+            }
+        }
+    }
+    Ok(doc)
 }

@@ -8,6 +8,8 @@ pub enum PolicyError {
     Version { doc: String, found: String },
     #[error("{doc}: project policies may not contain `{key}` (project policies are restrict-only; trust the file by hash to lift this)")]
     ProjectForbidden { doc: String, key: String },
+    #[error("{doc}: company rules may not contain `{key}` (they can only forbid: filesystem.deny_read, filesystem.deny_write, process.deny, network.deny)")]
+    OrgForbidden { doc: String, key: String },
     #[error("{doc}: {section}[{index}]: {msg}")]
     BadRule { doc: String, section: String, index: usize, msg: String },
     #[error("{doc}: unknown variable ${{{var}}}")]
