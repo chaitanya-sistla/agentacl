@@ -182,6 +182,15 @@ restart (the
 conversation resumes). Notifications come at most once a minute, as a
 digest, and can be silenced.
 
+## Fleets
+
+For a company: a package from your device management enrolls each Mac with
+a server you host (`agentacl-server`, one container behind Caddy). The
+server shows every Mac, its users, the agents they run (and whether they
+run under AgentACL), and what was refused; company rules (denies only)
+apply on every Mac and nothing on the Mac can lift them. Decisions stay on
+the Mac. See [docs/fleet.md](docs/fleet.md).
+
 ## A real Claude Code session
 
 ![Claude Code inside the AgentACL sandbox: a file read is refused by the kernel, then allowed after the rule changes](docs/images/example-session.png)
@@ -275,8 +284,10 @@ another? Please report it privately via [SECURITY.md](SECURITY.md).
 
 ### Does it send anything to the cloud?
 
-No. Rules, the audit log and the console are local to your Mac. No
-authorization decision uses a language model.
+No. Rules, the audit log and the console are local to your Mac. A Mac
+your company enrolls in its own fleet server reports there
+([docs/fleet.md](docs/fleet.md)). No authorization decision uses a
+language model.
 
 ### Does it need root or a kernel extension?
 
