@@ -16,6 +16,7 @@ path = "src/bin/agentacl-esd.rs"
 [dependencies]
 agentacl-policy.workspace = true
 agentacl-core.workspace = true
+agentacl-fleet.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

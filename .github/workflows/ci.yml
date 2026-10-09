@@ -78,7 +78,7 @@ jobs:
         run: |
           sudo apt-get install -y shellcheck >/dev/null
           shellcheck scripts/*.sh .githooks/*
-          shellcheck -x -e SC1091 scripts/demo/*.sh scripts/probes/*.sh scripts/es/*.sh
+          shellcheck -x -e SC1091 scripts/demo/*.sh scripts/probes/*.sh scripts/es/*.sh scripts/fleet/*.sh packaging/macos/fleet/scripts/*
       - name: Workflow lint
         run: |
           bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -117,6 +117,21 @@ jobs:
           "$bin" policy check
           "$bin" policy check --path "$HOME/.ssh/id_ed25519" | tee /tmp/check.txt
           grep -q 'DENY' /tmp/check.txt
+
+  server-linux:
+    name: Fleet server (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --locked -p agentacl-server -p agentacl-fleet -p agentacl-policy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked -p agentacl-server -p agentacl-fleet -p agentacl-policy
+      - name: Container image builds
+        run: docker build -f deploy/fleet/Dockerfile -t agentacl-server:ci .
 
   x86_64:
     name: Build for Intel Macs
@@ -184,7 +199,7 @@ jobs:
   all-green:
     name: All checks passed
     if: always()
-    needs: [authorship, spelling, hygiene, rust, x86_64, msrv, console, dependencies]
+    needs: [authorship, spelling, hygiene, rust, server-linux, x86_64, msrv, console, dependencies]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job

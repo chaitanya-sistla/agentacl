@@ -360,7 +360,7 @@ impl PolicySet {
             }
             docs.push(compile_doc(raw, vars)?);
         }
-        // Load order: Builtin, User, Project (stable within a layer).
+        // Load order: Builtin, Org, User, Project (stable within a layer).
         docs.sort_by_key(|d| d.layer);
 
         let canon: Vec<CanonDoc> = docs
@@ -384,7 +384,7 @@ impl PolicySet {
     }
 
     pub fn applicable<'a>(&'a self, agent_id: &str, project: &str) -> Vec<&'a Doc> {
-        self.docs.iter().filter(|d| d.layer == Layer::Builtin || d.applies_to(agent_id, project)).collect()
+        self.docs.iter().filter(|d| matches!(d.layer, Layer::Builtin | Layer::Org) || d.applies_to(agent_id, project)).collect()
     }
 
     pub fn effective_defaults(&self, agent_id: &str, project: &str) -> Defaults {
@@ -394,11 +394,18 @@ impl PolicySet {
     /// Effective rules in load order, with disabled protect-secrets groups removed.
     pub fn rules_for<'a>(&'a self, agent_id: &str, project: &str) -> Vec<&'a Rule> {
         let docs = self.applicable(agent_id, project);
-        let disabled: Vec<&String> = docs.iter().flat_map(|d| d.disable_builtin.iter()).collect();
+        // With company rules present, built-in protections can't be
+        // disabled: the company relies on them.
+        let org = docs.iter().any(|d| d.layer == Layer::Org);
+        let disabled: Vec<&String> = if org { vec![] } else { docs.iter().flat_map(|d| d.disable_builtin.iter()).collect() };
         docs.iter().flat_map(|d| d.rules.iter()).filter(|r| !(r.policy == "protect-secrets" && disabled.contains(&&r.id))).collect()
     }
 
     pub fn disabled_groups(&self, agent_id: &str, project: &str) -> Vec<String> {
-        self.applicable(agent_id, project).iter().flat_map(|d| d.disable_builtin.iter().cloned()).collect()
+        let docs = self.applicable(agent_id, project);
+        if docs.iter().any(|d| d.layer == Layer::Org) {
+            return vec![];
+        }
+        docs.iter().flat_map(|d| d.disable_builtin.iter().cloned()).collect()
     }
 }

@@ -7,6 +7,30 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+### Added
+- **Fleets: an endpoint agent and a central server** ([docs/fleet.md](docs/fleet.md)).
+  `agentacl-server` (Linux or macOS, a container behind Caddy, SQLite)
+  enrolls Macs with tokens, shows every Mac, its users, the agents running
+  (and whether under AgentACL), sessions and refusals, and publishes
+  company rules. On each Mac, a package installs a root-owned `agentacl`
+  and the `ai.agentacl.fleet` service, which reports every minute (reading
+  each user's data as that user) and applies the company rules.
+- **Company rules**: a policy layer (`org`) of explicit denies only, which
+  nothing on the Mac can lift (user or project policy, console grants,
+  live approvals); built-in protections can't be disabled while it is
+  present. Loaded by `agentacl run`, the Endpoint Security daemon,
+  `agentacl policy check` and the console, from a root-owned file only.
+- `agentacl fleet enroll | status | run`; `scripts/fleet/build-pkg.sh`
+  (package that enrolls on install, optionally signed),
+  `scripts/fleet/uninstall.sh`, `scripts/fleet/e2e-local.sh`.
+
+### Changed
+- The Endpoint Security daemon leaves an agent to Seatbelt only when the
+  root-owned `agentacl` (signed with the hardened runtime) launched it;
+  any other `agentacl` gets an ES session like any agent. On a development
+  ES install, `agentacl run` sessions from another copy are therefore
+  enforced twice, and their `ask` rules are refused at once.
+
 ## [0.5.0] - 2026-10-09
 
 **Toward protecting every agent, however it was started.** `agentacl run`

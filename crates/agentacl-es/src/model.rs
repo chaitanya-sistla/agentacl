@@ -10,6 +10,10 @@ pub struct ProcKey {
     pub version: i32,
 }
 
+/// Signed with the hardened runtime: no injected libraries (`DYLD_*`), no
+/// debugger attached by its user.
+pub const CS_RUNTIME: u32 = 0x10000;
+
 #[derive(Debug, Clone, Default)]
 pub struct Proc {
     pub key: Option<ProcKey>,
@@ -22,6 +26,8 @@ pub struct Proc {
     pub signing_id: String,
     pub team_id: String,
     pub platform_binary: bool,
+    /// Code-signing flags (`CS_*`, `<kern/cs_blobs.h>`).
+    pub cs_flags: u32,
 }
 
 impl Proc {

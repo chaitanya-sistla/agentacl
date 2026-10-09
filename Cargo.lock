@@ -22,6 +22,7 @@ dependencies = [
 name = "agentacl-core"
 version = "0.5.0"
 dependencies = [
+ "agentacl-fleet",
  "agentacl-policy",
  "anyhow",
  "hex",
@@ -42,6 +43,7 @@ name = "agentacl-es"
 version = "0.5.0"
 dependencies = [
  "agentacl-core",
+ "agentacl-fleet",
  "agentacl-policy",
  "anyhow",
  "endpoint-sec",
@@ -50,6 +52,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "agentacl-fleet"
+version = "0.5.0"
+dependencies = [
+ "agentacl-policy",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -64,6 +75,21 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "agentacl-server"
+version = "0.5.0"
+dependencies = [
+ "agentacl-fleet",
+ "anyhow",
+ "hex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tiny_http",
 ]
 
 [[package]]

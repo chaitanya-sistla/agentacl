@@ -40,6 +40,9 @@ pub struct Config {
     /// Only this user's agents get sessions (`None`: any user, for tests).
     pub uid: Option<u32>,
     pub own_pid: i32,
+    /// The only `agentacl` whose `run` sessions are left to Seatbelt: the
+    /// root-owned copy (any other one gets an ES session like any agent).
+    pub supervisor: String,
 }
 
 pub struct Engine<P: PolicyProvider> {
@@ -48,7 +51,9 @@ pub struct Engine<P: PolicyProvider> {
     config: Config,
     /// AgentACL's own processes (the daemon, supervisors, the console).
     protected: HashSet<ProcKey>,
-    /// `sandbox-exec` started by AgentACL, about to exec a supervised agent.
+    /// Images of the trusted supervisor (and its forks, until they exec).
+    trusted: HashSet<ProcKey>,
+    /// `sandbox-exec` started by it, about to exec a supervised agent.
     launching: HashSet<ProcKey>,
     /// Records for the journal, drained by the daemon.
     pub out: Vec<EsRecord>,
@@ -100,7 +105,16 @@ fn builtin(rule: &str, reason: &str) -> Decision {
 
 impl<P: PolicyProvider> Engine<P> {
     pub fn new(provider: P, config: Config) -> Self {
-        Engine { tracker: Tracker::default(), provider, config, protected: HashSet::new(), launching: HashSet::new(), out: vec![], now: Box::new(agentacl_core::audit::now_rfc3339) }
+        Engine {
+            tracker: Tracker::default(),
+            provider,
+            config,
+            protected: HashSet::new(),
+            trusted: HashSet::new(),
+            launching: HashSet::new(),
+            out: vec![],
+            now: Box::new(agentacl_core::audit::now_rfc3339),
+        }
     }
 
     #[cfg(test)]
@@ -169,6 +183,12 @@ impl<P: PolicyProvider> Engine<P> {
         Verdict::ALLOW
     }
 
+    /// The root-owned `agentacl`, signed with the hardened runtime (so its
+    /// user couldn't inject code into it to launch an unsandboxed agent).
+    fn is_supervisor(&self, p: &Proc) -> bool {
+        p.exe == self.config.supervisor && p.cs_flags & crate::model::CS_RUNTIME != 0
+    }
+
     fn deny(&mut self, s: &Session, p: &Proc, action: &str, resource: &str, d: Decision) -> Verdict {
         self.record(s, Kind::Denied, p, action, resource, Some(d));
         Verdict::DENY
@@ -199,7 +219,7 @@ impl<P: PolicyProvider> Engine<P> {
                 continue;
             }
             // The outermost agent is the session; a supervised one is skipped.
-            if ancestors(r).iter().any(|a| is_agentacl(&a.proc.exe) || a.agent.is_some()) {
+            if ancestors(r).iter().any(|a| a.proc.exe == self.config.supervisor || a.agent.is_some()) {
                 continue;
             }
             let root = r.proc.key();
@@ -226,15 +246,19 @@ impl<P: PolicyProvider> Engine<P> {
         match &m.op {
             Op::Fork { child } => {
                 self.tracker.on_fork(p, child);
-                if self.protected.contains(&p.key()) {
-                    if let Some(k) = child.key {
+                if let Some(k) = child.key {
+                    if self.protected.contains(&p.key()) {
                         self.protected.insert(k);
+                    }
+                    if self.trusted.contains(&p.key()) {
+                        self.trusted.insert(k);
                     }
                 }
                 Verdict::ALLOW
             }
             Op::Exit => {
                 self.protected.remove(&p.key());
+                self.trusted.remove(&p.key());
                 self.launching.remove(&p.key());
                 let c = self.tracker.on_exit(p);
                 self.change(c, p);
@@ -250,11 +274,15 @@ impl<P: PolicyProvider> Engine<P> {
                 // (Before its exec the child is still `agentacl`, which covers
                 // a fork notification that arrives late.)
                 // Keyed by audit token, so a reused pid inherits nothing.
-                let from_agentacl = self.protected.remove(&p.key()) || is_agentacl(&p.exe);
+                self.protected.remove(&p.key());
+                let from_trusted = self.trusted.remove(&p.key()) || self.is_supervisor(p);
                 let supervised = self.launching.remove(&p.key());
                 if is_agentacl(&target.exe) {
                     self.protected.insert(target.key());
-                } else if from_agentacl && target.exe == SANDBOX_EXEC {
+                }
+                if self.is_supervisor(target) {
+                    self.trusted.insert(target.key());
+                } else if from_trusted && target.exe == SANDBOX_EXEC {
                     self.launching.insert(target.key());
                 }
                 let Some(s) = self.tracker.member(p) else {
@@ -392,7 +420,18 @@ mod tests {
     const CLAUDE_TEAM: &str = "Q6L2SF6YDW";
 
     fn proc(pid: i32, version: i32, exe: &str) -> Proc {
-        Proc { key: Some(ProcKey { pid, version }), parent: None, ppid: 1, uid: 501, exe: exe.into(), signing_id: String::new(), team_id: String::new(), platform_binary: true }
+        Proc {
+            key: Some(ProcKey { pid, version }),
+            parent: None,
+            ppid: 1,
+            uid: 501,
+            exe: exe.into(),
+            signing_id: String::new(),
+            team_id: String::new(),
+            platform_binary: true,
+            // The packaged agentacl is signed with the hardened runtime.
+            cs_flags: if exe == agentacl_fleet::MANAGED_AGENTACL { crate::model::CS_RUNTIME } else { 0 },
+        }
     }
 
     fn claude(pid: i32) -> Proc {
@@ -405,6 +444,7 @@ mod tests {
             signing_id: "com.anthropic.claude-code".into(),
             team_id: CLAUDE_TEAM.into(),
             platform_binary: false,
+            cs_flags: 0,
         }
     }
 
@@ -426,7 +466,7 @@ mod tests {
         let user = Rc::new(RefCell::new("version: v1\n".to_string()));
         let loads = Rc::new(RefCell::new(0));
         let p = TestPolicy { home: home.to_string_lossy().into(), user: user.clone(), loads: loads.clone() };
-        let config = Config { home: home.clone(), tmpdir: root.join("tmp"), uid: Some(501), own_pid: 99 };
+        let config = Config { home: home.clone(), tmpdir: root.join("tmp"), uid: Some(501), own_pid: 99, supervisor: agentacl_fleet::MANAGED_AGENTACL.into() };
         let e = Engine::new(p, config).with_clock(|| "2026-10-09T10:00:00.000Z".into());
         (t, T { e, user, loads, project: project.to_string_lossy().into() })
     }
@@ -600,7 +640,7 @@ mod tests {
         let (_t, mut t) = setup();
         // `agentacl run claude`: agentacl → fork → sandbox-exec → claude.
         let shell = proc(10, 1, "/bin/zsh");
-        let (sup, _) = t.spawn(&shell, 30, "/opt/homebrew/bin/agentacl", &["agentacl", "run", "claude"]);
+        let (sup, _) = t.spawn(&shell, 30, agentacl_fleet::MANAGED_AGENTACL, &["agentacl", "run", "claude"]);
         let (sbx, _) = t.spawn(&sup, 31, SANDBOX_EXEC, &["sandbox-exec", "-f", "p.sb", "claude"]);
         let c = claude(31);
         let c = Proc { key: Some(ProcKey { pid: 31, version: 3 }), ..c };
@@ -614,12 +654,35 @@ mod tests {
         let (child, _) = t.spawn(&c, 40, "/usr/bin/make", &["make"]);
         let v = t.e.decide(&Msg { proc: c, op: Op::Signal { target: child, signal: 15 }, auth: true });
         assert_eq!(v, Verdict::ALLOW);
+        // The managed path without the hardened runtime (code injected into
+        // it, or an unsigned copy put there) isn't trusted either.
+        let other_shell = proc(13, 1, "/bin/zsh");
+        let child = proc(70, 1, &other_shell.exe);
+        t.e.decide(&Msg { proc: other_shell.clone(), op: Op::Fork { child: child.clone() }, auth: false });
+        let unhardened = Proc { cs_flags: 0, ..proc(70, 2, agentacl_fleet::MANAGED_AGENTACL) };
+        t.e.decide(&Msg { proc: child, op: Op::Exec { target: unhardened.clone(), argv: vec![], cwd: None, setuid: false }, auth: true });
+        // Its fork has its (unhardened) image until it execs.
+        let fork = Proc { cs_flags: 0, ..proc(71, 1, agentacl_fleet::MANAGED_AGENTACL) };
+        t.e.decide(&Msg { proc: unhardened.clone(), op: Op::Fork { child: fork.clone() }, auth: false });
+        let sbx3 = proc(71, 2, SANDBOX_EXEC);
+        t.e.decide(&Msg { proc: fork, op: Op::Exec { target: sbx3.clone(), argv: vec![], cwd: None, setuid: false }, auth: true });
+        let c4 = Proc { key: Some(ProcKey { pid: 71, version: 3 }), ..claude(71) };
+        t.e.decide(&Msg { proc: sbx3, op: Op::Exec { target: c4, argv: vec!["claude".into()], cwd: Some(t.project.clone()), setuid: false }, auth: true });
+        assert_eq!(t.e.sessions(), 2, "an unhardened managed copy isn't trusted");
+        // Another `agentacl` (a renamed program, an old copy) isn't trusted:
+        // its agent gets an ES session.
+        let fake_shell = proc(12, 1, "/bin/zsh");
+        let (fake, _) = t.spawn(&fake_shell, 60, "/Users/u/bin/agentacl", &["agentacl", "run", "claude"]);
+        let (sbx2, _) = t.spawn(&fake, 61, SANDBOX_EXEC, &["sandbox-exec", "-p", "(version 1)(allow default)", "claude"]);
+        let c3 = Proc { key: Some(ProcKey { pid: 61, version: 3 }), ..claude(61) };
+        t.e.decide(&Msg { proc: sbx2, op: Op::Exec { target: c3, argv: vec!["claude".into()], cwd: Some(t.project.clone()), setuid: false }, auth: true });
+        assert_eq!(t.e.sessions(), 3, "the fake supervisor's agent is enforced");
         // sandbox-exec run by anything else isn't a supervised launch.
         let other = proc(11, 1, "/bin/zsh");
         let (sbx, _) = t.spawn(&other, 50, SANDBOX_EXEC, &["sandbox-exec", "claude"]);
         let c2 = Proc { key: Some(ProcKey { pid: 50, version: 3 }), ..claude(50) };
         t.e.decide(&Msg { proc: sbx, op: Op::Exec { target: c2, argv: vec!["claude".into()], cwd: Some(t.project.clone()), setuid: false }, auth: true });
-        assert_eq!(t.e.sessions(), 2);
+        assert_eq!(t.e.sessions(), 4);
     }
     #[test]
     fn programs_that_start_processes_outside_the_session_are_refused() {
@@ -718,7 +781,7 @@ mod tests {
             r(102, 101, "/bin/bash", None),
             r(103, 102, "/bin/cat", None),
             // Under `agentacl run`: left to its supervisor.
-            r(110, 100, "/opt/homebrew/bin/agentacl", None),
+            r(110, 100, agentacl_fleet::MANAGED_AGENTACL, None),
             r(111, 110, "/usr/bin/sandbox-exec", None),
             r(112, 111, "/Users/u/.local/bin/claude", claude_id.clone()),
             // Another user's agent.

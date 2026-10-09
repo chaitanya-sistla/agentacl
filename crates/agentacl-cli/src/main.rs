@@ -42,6 +42,9 @@ enum Command {
     /// Endpoint Security: system-wide enforcement for every agent, however it was started
     #[command(subcommand)]
     Es(EsCmd),
+    /// Fleet: report to your organization's AgentACL server and apply its company rules
+    #[command(subcommand)]
+    Fleet(FleetCmd),
     /// Launch an agent under AgentACL supervision
     Run(RunArgs),
     /// Relaunch a running session under the current policy (keeps the conversation where the agent supports it)
@@ -50,6 +53,37 @@ enum Command {
     Stop(RestartArgs),
     /// Local policy UI in your browser (127.0.0.1 only)
     Ui(UiArgs),
+}
+
+#[derive(Subcommand)]
+enum FleetCmd {
+    /// Enroll this Mac with a fleet server (as root; the token is read from standard input)
+    Enroll {
+        /// The server, such as `https://fleet.example.com`
+        #[arg(long)]
+        server: String,
+        /// An HTTP(S) proxy, if the network needs one
+        #[arg(long)]
+        proxy: Option<String>,
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+    /// Is this Mac enrolled, when did it last report, which company policy is in force
+    Status {
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+    /// The reporting service (the LaunchDaemon ai.agentacl.fleet runs this as root)
+    Run {
+        /// One cycle, then exit
+        #[arg(long)]
+        once: bool,
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+    /// Internal: the per-user collector the service runs as each user
+    #[command(hide = true)]
+    CollectUser,
 }
 
 #[derive(Subcommand)]
@@ -212,6 +246,7 @@ fn main() -> ExitCode {
             Command::Events(a) => events(&paths, a),
             Command::Audit(a) => audit(&paths, a),
             Command::Es(EsCmd::Status) => es_status(&paths),
+            Command::Fleet(c) => fleet(c),
             Command::Run(a) => run(&paths, a),
             Command::Restart(a) => restart(&paths, a),
             Command::Stop(a) => stop(&paths, a),
@@ -724,6 +759,97 @@ fn audit(paths: &Paths, a: AuditArgs) -> Result<i32> {
     line("Grants", &r.grants, "none from the console");
     println!("  {:<14}unknown sites are {}", "Network", if r.network_mode == "ask" { "asked about" } else { "blocked" });
     Ok(code)
+}
+
+/// The machine-wide folder: the real one, or (hidden `--root`, tests) another
+/// owned by the caller. Policy loads never use `--root`.
+fn managed_at(root: Option<PathBuf>) -> agentacl_core::managed::Managed {
+    match root {
+        Some(root) => agentacl_core::managed::Managed { root, owner: unsafe { libc::getuid() } },
+        None => Default::default(),
+    }
+}
+
+fn fleet(c: FleetCmd) -> Result<i32> {
+    use agentacl_core::fleet;
+    let need_root = |root: &Option<PathBuf>| -> Result<()> {
+        if root.is_none() && unsafe { libc::geteuid() } != 0 {
+            bail!("run this as root (sudo): it writes to {}", agentacl_core::managed::ROOT);
+        }
+        Ok(())
+    };
+    match c {
+        FleetCmd::Enroll { server, proxy, root } => {
+            need_root(&root)?;
+            let m = managed_at(root);
+            if m.read_config()?.is_some() {
+                bail!("this Mac is already enrolled ({}); to enroll again, remove AgentACL's fleet configuration first", m.fleet_config().display());
+            }
+            let mut token = String::new();
+            std::io::stdin().read_line(&mut token)?;
+            let cfg = fleet::enroll(&m, &fleet::EnrollSource { server, token: token.trim().to_string(), proxy })?;
+            println!("Enrolled as {} with {}. Company rules are in {}.", cfg.device_id, cfg.server, m.policy().display());
+            println!("The service (LaunchDaemon ai.agentacl.fleet) reports every minute.");
+            Ok(0)
+        }
+        FleetCmd::Status { root } => {
+            let m = managed_at(root);
+            let st = m.read_state();
+            match m.read_config() {
+                Ok(Some(cfg)) => println!("Enrolled with {} as {}", cfg.server, cfg.device_id),
+                Ok(None) => println!("Not enrolled with a fleet server."),
+                Err(e) if e.root_cause().downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) => {
+                    println!("Enrolled (details are readable by root only).")
+                }
+                Err(e) => return Err(e),
+            }
+            let company = match m.org_source() {
+                Ok(Some(_)) => format!("in force ({})", m.policy().display()),
+                Ok(None) => "none".into(),
+                Err(e) => format!("PROBLEM: {e:#}"),
+            };
+            println!("Company rules: {company}");
+            if let Some(v) = st.policy_version {
+                println!("Company policy version: {v}");
+            }
+            if let Some(t) = st.last_report {
+                println!("Last report: {}", agentacl_core::audit::format_rfc3339(t, 0));
+            }
+            if st.dropped > 0 {
+                println!("Events the server didn't keep (over the daily quota): {}", st.dropped);
+            }
+            for e in [&st.policy_error, &st.last_error].into_iter().flatten() {
+                println!("Problem: {e}");
+            }
+            Ok(0)
+        }
+        FleetCmd::Run { once, root } => {
+            need_root(&root)?;
+            let m = managed_at(root);
+            let exe = std::env::current_exe()?;
+            if !once {
+                fleet::run(&m, &exe);
+            }
+            agentacl_core::agents::identify_without_file_reads();
+            match m.read_config()? {
+                Some(cfg) => fleet::cycle(&m, &cfg, &exe)?,
+                None => match fleet::enroll_source(&m) {
+                    Some(src) => {
+                        fleet::enroll(&m, &src)?;
+                    }
+                    None => bail!("not enrolled"),
+                },
+            }
+            Ok(0)
+        }
+        FleetCmd::CollectUser => {
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::Read::take(std::io::stdin(), 64 * 1024), &mut input)?;
+            let req: fleet::collect::UserRequest = serde_json::from_str(&input).unwrap_or_default();
+            println!("{}", serde_json::to_string(&fleet::collect::collect_user(&req))?);
+            Ok(0)
+        }
+    }
 }
 
 fn es_status(paths: &Paths) -> Result<i32> {

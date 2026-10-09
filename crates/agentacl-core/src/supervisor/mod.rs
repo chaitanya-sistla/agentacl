@@ -133,6 +133,8 @@ pub fn policy_sources(paths: &Paths, policy_file: Option<&Path>, project: &Path)
         Err(e) => return Err(e).with_context(|| format!("reading policy {}", user_path.display())),
     };
     let mut src = builtin_sources(user.is_none());
+    // Company rules (fleet): explicit denies nothing below can lift.
+    src.extend(paths.managed.org_source()?);
     src.extend(user);
     // Grants made from the console; each document's `match:` scopes it. A
     // broken file is left out (only its grants are lost) and reported.
@@ -645,6 +647,8 @@ fn policy_inputs(paths: &Paths, opts: &RunOptions, project: &Path, agent: &str) 
     ];
     // The console's access files that can apply to this agent here.
     v.extend(crate::access::applicable(paths, agent, project));
+    // Company rules: a change makes the session stale (restart to apply).
+    v.push(paths.managed.policy());
     v
 }
 

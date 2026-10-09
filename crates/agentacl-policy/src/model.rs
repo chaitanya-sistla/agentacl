@@ -33,6 +33,9 @@ impl Effect {
 #[serde(rename_all = "lowercase")]
 pub enum Layer {
     Builtin,
+    /// Company rules from the fleet server (docs/design/fleet.md): explicit
+    /// denies only, applying to every agent and project.
+    Org,
     User,
     Project,
 }

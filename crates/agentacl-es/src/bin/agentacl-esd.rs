@@ -131,7 +131,7 @@ fn run(c: Config) -> Result<()> {
     // The handler must never read a file a process chose.
     agentacl_core::agents::identify_without_file_reads();
     set_runtime_version();
-    let config = EngineConfig { home: c.home.clone(), tmpdir: c.tmpdir.clone(), uid: Some(c.uid), own_pid: std::process::id() as i32 };
+    let config = EngineConfig { home: c.home.clone(), tmpdir: c.tmpdir.clone(), uid: Some(c.uid), own_pid: std::process::id() as i32, supervisor: agentacl_fleet::MANAGED_AGENTACL.into() };
     let policies = AsyncPolicy::spawn(FsPolicy::new(paths, c.home.clone(), c.tmpdir.clone()), c.uid, c.gid)?;
     let engine = Arc::new(Mutex::new(Engine::new(policies, config)));
     let handler = std::panic::AssertUnwindSafe((engine.clone(), Mutex::new(tx.clone())));

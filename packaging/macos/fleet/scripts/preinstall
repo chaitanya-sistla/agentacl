@@ -1,0 +1,4 @@
+#!/bin/bash
+# Stop the running fleet service before its binary is replaced.
+launchctl bootout system/ai.agentacl.fleet 2>/dev/null || true
+exit 0

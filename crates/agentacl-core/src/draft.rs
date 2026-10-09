@@ -81,6 +81,8 @@ pub fn sources(paths: &Paths, scope: Scope, project: &Path, draft: Option<&str>)
         _ => read_policy(paths, Scope::Project, project)?.map(|b| String::from_utf8_lossy(&b).into_owned()),
     };
     let mut src = builtin_sources(user.is_none());
+    // Company rules, as `run` loads them: a draft is checked against them.
+    src.extend(paths.managed.org_source()?);
     if let Some(y) = user {
         src.push(PolicySource { layer: Layer::User, name: "user".into(), yaml: y });
     }

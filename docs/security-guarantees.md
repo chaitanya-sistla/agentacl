@@ -85,6 +85,16 @@ first row.
 | The console being driven by a web page or an agent | ENFORCED | Localhost only, one-time link, HttpOnly per-port cookie plus a custom header, strict Host/Origin/CSP; the proxy refuses the console's port | | `ui::tests::*`, `netproxy::tests::ui_port_is_always_refused` |
 | Audit completeness | PARTIALLY ENFORCED | Kernel violation reports + proxy | Kernel reports are rate-limited, so denial counts are a lower bound. Enforcement is unaffected | [macos-enforcement.md](macos-enforcement.md) §2.3 |
 
+## Fleet ([fleet.md](fleet.md))
+
+| Capability | Status | Enforcement | Notes | Evidence |
+|---|---|---|---|---|
+| Company rules can't be lifted on the Mac (user or project policy, console grants, live network approvals, `builtin.disable`) | ENFORCED | Company rules are explicit denies in their own layer; every deny wins over every allow; built-ins can't be disabled while they are present | Applies wherever AgentACL enforces: `agentacl run` sessions, and every agent with Endpoint Security. Program rules with arguments are only logged under Seatbelt; host rules match names (deny address ranges too) and apply in `agentacl run` sessions only | `agentacl-policy` `tests/org.rs`; development VM: a company deny refused an agent's read the user's policy allowed, under the ES extension and under `agentacl run` |
+| Company rules for agents started outside AgentACL | PLANNED | Endpoint Security | Verified on a development VM; standard Macs need Apple's entitlement. Without it the server shows agents running outside AgentACL | [design/endpoint-security.md](design/endpoint-security.md) |
+| A server (or someone breaking its TLS) loosening a Mac | ENFORCED | Each Mac accepts only the company-rules format (denies, absolute paths or `${HOME}`), checks a full load and Seatbelt compile, and never applies an older version | A compromised server can remove company rules, or push rules that stop agents working | `fleet::tests`, `managed::tests` |
+| Company rules planted or changed by a user | ENFORCED | The file and its folders must be root-owned, not group- or world-writable, not links; an enrolled Mac without them refuses to start sessions | Users with admin rights can remove AgentACL; the server shows a Mac that stops reporting | `managed::tests` |
+| What the server shows | OBSERVED | Running agents and enforcement come from the root service; users' sessions and refusals from their own AgentACL files | Users can edit their own files, so that part is reported by the user | [design/fleet.md](design/fleet.md) |
+
 ## Checking your own setup
 
 `agentacl audit` (and the console's Agents page) reports what an agent

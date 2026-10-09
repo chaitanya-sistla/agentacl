@@ -1,0 +1,27 @@
+[package]
+name = "agentacl-server"
+description = "AgentACL fleet server: enrollment, reports from every Mac, company rules, web console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "agentacl-server"
+path = "src/main.rs"
+
+[dependencies]
+agentacl-fleet.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+tiny_http.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
