@@ -1,0 +1,56 @@
+# The AgentACL fleet server behind Caddy (automatic HTTPS). See docs/fleet.md.
+#
+#   cd deploy/fleet
+#   printf '%s\n' 'a long admin password' > admin_password.txt; chmod 600 admin_password.txt
+#   FLEET_DOMAIN=fleet.example.com docker compose up -d
+#
+# The server's own port is not published: only Caddy reaches it, and the
+# server trusts X-Forwarded-For only from Caddy's fixed address.
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/fleet/Dockerfile
+    command:
+      - serve
+      - --db
+      - /data/agentacl-server.db
+      - --listen
+      - 0.0.0.0:8080
+      - --public-url
+      - https://${FLEET_DOMAIN:?set FLEET_DOMAIN}
+      - --trusted-proxy
+      - 172.30.0.2
+    environment:
+      AGENTACL_SERVER_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets: [admin_password]
+    volumes: [data:/data]
+    networks:
+      fleet:
+        ipv4_address: 172.30.0.3
+    restart: unless-stopped
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443"]
+    environment:
+      FLEET_DOMAIN: ${FLEET_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      fleet:
+        ipv4_address: 172.30.0.2
+    depends_on: [server]
+    restart: unless-stopped
+networks:
+  fleet:
+    ipam:
+      config: [{ subnet: 172.30.0.0/24 }]
+secrets:
+  admin_password:
+    file: ./admin_password.txt
+volumes:
+  data: {}
+  caddy_data: {}
+  caddy_config: {}

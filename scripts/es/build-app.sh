@@ -15,6 +15,9 @@ id="${SIGN_IDENTITY:--}"
 # Endpoint Security extensions name a Mach service prefixed with the team id.
 team="${TEAM_ID:-AGENTACLDEV}"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
+# macOS replaces an activated extension only with a higher bundle version:
+# BUNDLE_VERSION=0.5.1 for a development rebuild of the same release.
+version="${BUNDLE_VERSION:-$version}"
 app="$root/target/AgentACL.app"
 ext="$app/Contents/Library/SystemExtensions/ai.agentacl.app.esd.systemextension"
 

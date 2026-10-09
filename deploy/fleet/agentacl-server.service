@@ -1,0 +1,21 @@
+# systemd unit for the fleet server without containers. Put a TLS reverse
+# proxy (Caddy, nginx) in front of 127.0.0.1:8080. See docs/fleet.md.
+[Unit]
+Description=AgentACL fleet server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=agentacl
+Group=agentacl
+StateDirectory=agentacl
+ExecStart=/usr/local/bin/agentacl-server serve --db /var/lib/agentacl/agentacl-server.db --listen 127.0.0.1:8080 --public-url https://fleet.example.com --trusted-proxy 127.0.0.1
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/agentacl
+
+[Install]
+WantedBy=multi-user.target
