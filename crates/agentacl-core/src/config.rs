@@ -12,6 +12,8 @@ pub struct Paths {
     pub db_path: PathBuf,
     pub user_policy: PathBuf,
     pub trust_file: PathBuf,
+    /// The machine-wide folder: company rules, fleet enrollment.
+    pub managed: crate::managed::Managed,
 }
 
 impl Paths {
@@ -31,7 +33,15 @@ impl Paths {
     }
 
     pub fn with_dirs(home: PathBuf, state_dir: PathBuf, config_dir: PathBuf) -> Paths {
-        Paths { db_path: state_dir.join("agentacl.db"), user_policy: config_dir.join("policy.yaml"), trust_file: config_dir.join("config.yaml"), home, state_dir, config_dir }
+        Paths {
+            db_path: state_dir.join("agentacl.db"),
+            user_policy: config_dir.join("policy.yaml"),
+            trust_file: config_dir.join("config.yaml"),
+            managed: Default::default(),
+            home,
+            state_dir,
+            config_dir,
+        }
     }
 }
 

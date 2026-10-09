@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 agentacl-policy.workspace = true
+agentacl-fleet.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

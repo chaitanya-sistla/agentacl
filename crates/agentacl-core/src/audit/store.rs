@@ -48,6 +48,7 @@ pub struct Store {
 }
 
 const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
   identity_json TEXT NOT NULL,
@@ -227,6 +228,32 @@ impl Store {
             .conn
             .query_row("SELECT * FROM sessions WHERE supervisor_pid = ?1 AND session_id != ?2 AND started_at >= ?3 ORDER BY started_at LIMIT 1", params![supervisor_pid, previous, after], row_session)
             .optional()?)
+    }
+
+    /// A random id for this audit log, made when it is first asked for: a
+    /// deleted and recreated log gets a new one (fleet event cursors).
+    pub fn log_id(&self) -> Result<String> {
+        if let Some(id) = self.conn.query_row("SELECT value FROM meta WHERE key = 'log_id'", [], |r| r.get(0)).optional()? {
+            return Ok(id);
+        }
+        let id = crate::session::new_session_id().replacen("agt_", "log_", 1);
+        self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('log_id', ?1)", [&id])?;
+        Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'log_id'", [], |r| r.get(0))?)
+    }
+
+    /// Sessions running, or started since `since` (RFC 3339), newest first.
+    pub fn recent_sessions(&self, since: &str, limit: usize) -> Result<Vec<SessionRecord>> {
+        let mut st = self.conn.prepare("SELECT * FROM sessions WHERE ended_at IS NULL OR started_at >= ?1 ORDER BY started_at DESC LIMIT ?2")?;
+        let rows = st.query_map(params![since, limit as i64], row_session)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The oldest `limit` events after `rowid`, oldest first (a cursor that
+    /// never skips any, unlike [`Store::events`]).
+    pub fn events_after(&self, rowid: i64, limit: usize) -> Result<Vec<(i64, Event)>> {
+        let mut st = self.conn.prepare("SELECT * FROM events WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2")?;
+        let rows = st.query_map(params![rowid, limit as i64], row_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn active_sessions(&self) -> Result<Vec<SessionRecord>> {

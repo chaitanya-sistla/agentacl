@@ -8,7 +8,7 @@
 use crate::engine::PolicyProvider;
 use agentacl_core::config::Paths;
 use agentacl_policy::expand::Vars;
-use agentacl_policy::set::{builtin_sources, LoadOptions, PolicySet};
+use agentacl_policy::set::{builtin_sources, LoadOptions, PolicySet, PolicySource};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -56,6 +56,7 @@ impl FsPolicy {
         let mut files = vec![self.paths.user_policy.clone(), self.paths.trust_file.clone(), project.join(".agentacl/policy.yaml")];
         // Their hook scripts are protected.
         files.extend(agentacl_core::supervisor::claude_settings(&self.home, project));
+        files.push(self.paths.managed.policy());
         if let Ok(rd) = std::fs::read_dir(agentacl_core::access::dir(&self.paths)) {
             let mut names: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
             names.sort();
@@ -113,10 +114,24 @@ impl FsPolicy {
         }
     }
 
-    /// Fails closed: the built-in protections and the default policy.
+    /// Fails closed: the built-in protections, the default policy and the
+    /// company rules (if they load; they were validated before they were
+    /// written).
     fn builtins_only(&self, project: &Path) -> PolicySet {
+        self.builtins_with(project, self.paths.managed.org_source().ok().flatten())
+    }
+
+    /// [`FsPolicy::builtins_only`] with company rules already read: no I/O.
+    fn builtins_with(&self, project: &Path, org: Option<PolicySource>) -> PolicySet {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let vars = Vars { home: s(&self.home), project: s(project), tmpdir: s(&self.tmpdir), agent_state: None, agentacl_state: s(&self.paths.state_dir), agentacl_config: s(&self.paths.config_dir) };
+        if let Some(org) = org {
+            let mut src = builtin_sources(true);
+            src.push(org);
+            if let Ok(set) = PolicySet::load(src, &vars, &LoadOptions::default()) {
+                return set;
+            }
+        }
         PolicySet::load(builtin_sources(true), &vars, &LoadOptions::default()).expect("built-in policies load")
     }
 }
@@ -151,6 +166,8 @@ impl FsPolicy {
 }
 
 type Key = (String, PathBuf);
+/// The built-ins (and company rules) for a project, computed without I/O.
+type Fallback = Box<dyn Fn(&Path, Option<PolicySource>) -> PolicySet + Send>;
 
 #[derive(Default)]
 struct Shared {
@@ -158,6 +175,8 @@ struct Shared {
     /// yet).
     sets: HashMap<Key, (Arc<PolicySet>, bool)>,
     pending: std::collections::HashSet<Key>,
+    /// The company rules, read by the loader (the handler reads no file).
+    org: Option<PolicySource>,
 }
 
 /// The daemon's provider: answers from memory; a loader thread (acting as
@@ -166,7 +185,7 @@ struct Shared {
 pub struct AsyncPolicy {
     shared: Arc<(std::sync::Mutex<Shared>, std::sync::Condvar)>,
     tx: std::sync::mpsc::Sender<Key>,
-    fallback: Box<dyn Fn(&Path) -> PolicySet + Send>,
+    fallback: Fallback,
 }
 
 impl AsyncPolicy {
@@ -178,7 +197,10 @@ impl AsyncPolicy {
         let (paths, home, tmpdir) = (fs.paths.clone(), fs.home.clone(), fs.tmpdir.clone());
         let s = shared.clone();
         std::thread::spawn(move || {
-            let _ = ready_tx.send(crate::creds::become_user(uid, gid));
+            let became = crate::creds::become_user(uid, gid);
+            let org_of = |fs: &FsPolicy| fs.paths.managed.org_source().ok().flatten();
+            s.0.lock().unwrap_or_else(|p| p.into_inner()).org = org_of(&fs);
+            let _ = ready_tx.send(became);
             // Loads what is asked for, and rechecks every policy it loaded
             // once a second, so a grant applies to the agent's next attempt.
             // On a schedule, not on a quiet queue: requests keep coming.
@@ -199,6 +221,8 @@ impl AsyncPolicy {
                 if last.elapsed() >= TICK {
                     keys.extend(known.iter().cloned());
                     last = Instant::now();
+                    let org = org_of(&fs);
+                    s.0.lock().unwrap_or_else(|p| p.into_inner()).org = org;
                 }
                 for key in keys {
                     let set = fs.reload(&key.0, &key.1);
@@ -214,7 +238,7 @@ impl AsyncPolicy {
         });
         ready_rx.recv()??;
         let builtins = FsPolicy::new(paths, home, tmpdir);
-        Ok(AsyncPolicy { shared, tx, fallback: Box::new(move |p| builtins.builtins_only(p)) })
+        Ok(AsyncPolicy { shared, tx, fallback: Box::new(move |p, org| builtins.builtins_with(p, org)) })
     }
 }
 
@@ -241,7 +265,7 @@ impl PolicyProvider for AsyncPolicy {
         }
         // Not loaded in time (the loader may be stuck on a file): the
         // built-in protections, until it is.
-        let set = Arc::new((self.fallback)(project));
+        let set = Arc::new((self.fallback)(project, g.org.clone()));
         g.sets.insert(key, (set.clone(), true));
         set
     }
