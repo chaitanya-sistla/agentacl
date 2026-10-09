@@ -13,7 +13,7 @@ use agentacl_policy::{Action, Effect, PolicyEngine, Request, Resource, Subject, 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use render::{agent_display, card, decision_label, table, tilde};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -39,6 +39,9 @@ enum Command {
     Events(EventsArgs),
     /// What an agent could reach (credentials, cloud drives, MCP servers, company data services) and what to fix first
     Audit(AuditArgs),
+    /// Endpoint Security: system-wide enforcement for every agent, however it was started
+    #[command(subcommand)]
+    Es(EsCmd),
     /// Launch an agent under AgentACL supervision
     Run(RunArgs),
     /// Relaunch a running session under the current policy (keeps the conversation where the agent supports it)
@@ -47,6 +50,12 @@ enum Command {
     Stop(RestartArgs),
     /// Local policy UI in your browser (127.0.0.1 only)
     Ui(UiArgs),
+}
+
+#[derive(Subcommand)]
+enum EsCmd {
+    /// Is the Endpoint Security daemon installed and running, and when did it last record something
+    Status,
 }
 
 #[derive(Args)]
@@ -202,6 +211,7 @@ fn main() -> ExitCode {
             }
             Command::Events(a) => events(&paths, a),
             Command::Audit(a) => audit(&paths, a),
+            Command::Es(EsCmd::Status) => es_status(&paths),
             Command::Run(a) => run(&paths, a),
             Command::Restart(a) => restart(&paths, a),
             Command::Stop(a) => stop(&paths, a),
@@ -269,7 +279,7 @@ fn discover(_paths: &Paths, json: bool) -> Result<i32> {
 fn live_sessions(store: &Store) -> Result<Vec<agentacl_core::audit::SessionRecord>> {
     let mut out = vec![];
     for s in store.active_sessions()? {
-        let sup_alive = proc::facts(s.supervisor_pid).is_some();
+        let sup_alive = s.liveness_pid().and_then(proc::facts).is_some();
         if !sup_alive {
             store.end_session(&s.session_id, &agentacl_core::audit::now_rfc3339(), None)?;
             continue;
@@ -516,6 +526,8 @@ fn parse_effect(s: &str) -> Result<Effect> {
 
 fn events(paths: &Paths, a: EventsArgs) -> Result<i32> {
     let store = Store::open(&paths.db_path)?;
+    // Decisions of the Endpoint Security daemon, if it runs.
+    let _ = agentacl_core::es_journal::ingest(paths, &store);
     let decision = a.decision.as_deref().map(parse_effect).transpose()?;
     let mut q = EventQuery { session: a.session.clone(), decision, after_rowid: None, limit: Some(a.limit) };
     let print = |rows: &[(i64, agentacl_core::audit::Event)], follow: bool| -> Result<()> {
@@ -565,6 +577,7 @@ fn events(paths: &Paths, a: EventsArgs) -> Result<i32> {
     q.limit = Some(1000);
     loop {
         std::thread::sleep(Duration::from_millis(250));
+        let _ = agentacl_core::es_journal::ingest(paths, &store);
         let rows = store.events(&q)?;
         if let Some((r, _)) = rows.last() {
             q.after_rowid = Some(*r);
@@ -711,4 +724,42 @@ fn audit(paths: &Paths, a: AuditArgs) -> Result<i32> {
     line("Grants", &r.grants, "none from the console");
     println!("  {:<14}unknown sites are {}", "Network", if r.network_mode == "ask" { "asked about" } else { "blocked" });
     Ok(code)
+}
+
+fn es_status(paths: &Paths) -> Result<i32> {
+    let ok = |b: bool| if b { "yes" } else { "no" };
+    let installed = Path::new("/Library/PrivilegedHelperTools/agentacl-esd").exists() || Path::new("/Library/LaunchDaemons/ai.agentacl.esd.plist").exists();
+    let config = Path::new("/Library/Application Support/AgentACL/esd.json").exists();
+    // A loaded LaunchDaemon or an activated system extension.
+    let daemon = std::process::Command::new("/bin/launchctl")
+        .args(["print", "system/ai.agentacl.esd"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    let sysext = std::process::Command::new("/usr/bin/systemextensionsctl")
+        .arg("list")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.contains("ai.agentacl.app.esd") && l.contains("activated enabled")));
+    let journal = agentacl_core::es_journal::dir(paths).join(agentacl_core::es_journal::FILE);
+    let last = std::fs::metadata(&journal).and_then(|m| m.modified()).ok().map(|t| {
+        let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+        if secs < 120 {
+            format!("{secs} s ago")
+        } else {
+            format!("{} min ago", secs / 60)
+        }
+    });
+    println!("Endpoint Security (system-wide enforcement)");
+    println!("  daemon installed      {}", ok(installed));
+    println!("  config                {}", ok(config));
+    println!("  LaunchDaemon running  {}", ok(daemon));
+    println!("  system extension      {}", if sysext { "activated" } else { "not activated" });
+    println!("  last decision logged  {}", last.as_deref().unwrap_or("never"));
+    if !(daemon || sysext) {
+        println!("\nNot running. Today it needs a development Mac (SIP and AMFI off); signed releases need Apple's");
+        println!("Endpoint Security entitlement. See docs/design/endpoint-security.md. Agents started with");
+        println!("`agentacl run` are protected either way.");
+    }
+    Ok(0)
 }
