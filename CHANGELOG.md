@@ -8,18 +8,20 @@ section whose heading matches the tag, so every release needs one.
 ## [Unreleased]
 
 ### Added
-- **Endpoint Security backend (preview, not yet run).** `agentacl-esd`, a
-  root daemon designed to apply AgentACL's file and program rules to agents
-  that `agentacl run` didn't launch: agents identified by code signature,
-  every descendant tracked by audit token, file, metadata, exec (with
-  arguments) and signal requests decided by the policy `agentacl run` loads,
-  grants applied without a restart, and decisions in the usual audit log and
-  console. Network rules aren't enforced by it, and some escapes remain open
-  (see the design doc). Packaged as a LaunchDaemon and as `AgentACL.app`
-  with a system extension. It needs a development Mac (SIP and AMFI off) or
-  Apple's entitlement to run, so it isn't enabled and isn't a guarantee yet;
-  see docs/design/endpoint-security.md.
-- `agentacl es status`.
+- **Endpoint Security backend (preview).** `agentacl-esd`, a root daemon
+  that applies AgentACL's file and program rules to agents that
+  `agentacl run` didn't launch: agents identified by code signature, every
+  descendant tracked by audit token, file, metadata, exec (with arguments)
+  and signal requests decided by the policy `agentacl run` loads, grants
+  applied without a restart, and decisions in the usual audit log and
+  console. Verified on a development VM (SIP and AMFI off): the smoke test
+  passes 18/18 as a LaunchDaemon and as a system extension, and Claude Code
+  runs under it. It can't run on a standard Mac until Apple grants the
+  Endpoint Security entitlement, so it isn't enabled by default and isn't a
+  guarantee yet. Network rules aren't enforced by it, and some escapes
+  remain open; see docs/design/endpoint-security.md.
+- `agentacl es status`; `scripts/es/` (development install, smoke test,
+  app build).
 
 ## [0.4.0] - 2026-10-08
 

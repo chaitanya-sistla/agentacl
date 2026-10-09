@@ -252,8 +252,8 @@ Full list: [security-guarantees.md](docs/security-guarantees.md) and the
   boundaries, with machine-readable results
 - Endpoint Security backend: file and program rules for agents however they
   were started, argument-aware program rules, grants without a restart.
-  Built (`agentacl-esd`), not yet verified on a development Mac; shipping
-  needs Apple's entitlement ([design](docs/design/endpoint-security.md))
+  Built (`agentacl-esd`) and verified on a development Mac; shipping needs
+  Apple's entitlement ([design](docs/design/endpoint-security.md))
 - Signed and notarized releases
 
 ## FAQ

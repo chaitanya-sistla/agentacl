@@ -141,7 +141,8 @@ Agents started any other way (plain `claude`, a GUI, an IDE) are only
 **PLANNED** (not implemented):
 
 - Endpoint Security backend (`crates/agentacl-es`, the `agentacl-esd`
-  daemon): implemented and unit-tested, not yet run on a real ES client
+  daemon): implemented, and verified on a development VM with SIP and AMFI
+  off; needs Apple's entitlement for standard Macs
   ([design](design/endpoint-security.md)). The `MacOSEndpointSecurityBackend`
   launch backend still reports unavailable.
 - System-wide enforcement for unsupervised agents.

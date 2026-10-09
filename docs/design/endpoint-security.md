@@ -1,11 +1,10 @@
 # Endpoint Security backend
 
-Status: implemented, **not yet run on a real Endpoint Security client**.
-Everything under "Tested here" was tested on a normal Mac without Endpoint
-Security. Everything that needs the framework at run time waits for a
-development VM (SIP and AMFI off) or Apple's entitlement. Nothing in this
-document is a guarantee until it has run there: see "What has to be
-verified".
+Status: implemented and **run on a development VM** (macOS 26.6, SIP and
+AMFI off), as a LaunchDaemon and as a system extension; see "Verified on a
+development VM". It can't run on a standard Mac until Apple grants the
+Endpoint Security entitlement, so it isn't a guarantee for users yet, and
+some checks are still open (see "What remains to verify").
 
 ## Why
 
@@ -159,28 +158,66 @@ sessions it tracked before.
 - Packaging: plists lint, scripts pass shellcheck, `scripts/es/build-app.sh`
   builds and verifies `AgentACL.app` (ad-hoc signed).
 
-## What has to be verified (on the development VM)
+## Verified on a development VM (2026-10-09)
 
-1. The adapter's mapping of every event: paths, open flags (`O_TRUNC`),
-   audit tokens, `cwd`, setuid bits, the signing ids of `launchctl`,
-   `osascript`, `open`, `at` and `crontab`.
-2. Deadlines and throughput with `cache = false` under a real workload (a
-   build, `git`, `npm install`), and whether muting paths for non-agent
-   processes is needed.
-3. That an agent's runtime (dyld, caches, its install folder, temp files)
-   isn't refused by the default rules when it isn't sandboxed by Seatbelt.
-4. Session tracking for real agents: Claude Code, Codex, Gemini CLI, IDE
-   extensions and desktop apps; adoption at daemon start; and that
-   `agentacl run` launches arrive as fork, then exec of `sandbox-exec`, then
-   exec of the agent.
-5. Tamper: killing or stopping the daemon from an agent.
-6. That the journal writer and the policy loader threads' change of
-   identity (`pthread_setugid_np`) works under the daemon, and the 250 ms
-   first-load wait is enough in practice.
-7. Activation of the system extension and the Full Disk Access prompt.
+macOS 26.6.2 in a Tart VM with SIP and AMFI off, `agentacl-esd` built on
+the host. `scripts/es/smoke-test.sh` passes **18/18** with the
+LaunchDaemon and **18/18** with the system extension:
 
-Until these pass, `docs/security-guarantees.md` keeps system-wide
-enforcement as PLANNED.
+- a process that isn't an agent reads a (fake) credential file; the agent,
+  and a grandchild, are refused;
+- the agent writes and reads its project, `/dev/null` and its temp folder;
+  reads outside the project are refused by default;
+- renaming a credential file into the project, and `chmod` on it, are
+  refused (AUTH_RENAME, AUTH_SETMODE);
+- an argument rule (`touch blocked-by-rule *`) refuses that command and
+  not the same program with other arguments;
+- `sudo` (setuid), `osascript`, `launchctl submit` and `open -a Terminal`
+  are refused;
+- the agent can't signal an `agentacl` process; the human can;
+- a grant in the policy applies to the next attempt, without a restart;
+- the refusals appear in `agentacl events`.
+
+Also verified:
+
+- **Claude Code 2.1.295** (installed with its own installer) is identified
+  by its signature and runs, logged in, under the daemon; reading
+  `~/.aws/credentials` is refused. With the default rules it is also
+  refused: listing the home folder and `~/.local/bin`, writing
+  `~/.claude/plugins` and `~/Applications`, writing its
+  `~/.claude/sessions/*.key` files (the built-in private-key rule), and
+  running `ps` (setuid). The same rules apply under `agentacl run`; Claude
+  Code kept working.
+- **Adoption:** an agent running when the daemon restarts is adopted and
+  still refused.
+- **`agentacl run`** gets no second session (the launch arrives as fork,
+  then exec of `sandbox-exec`, then exec of the agent).
+- **Tamper:** the agent can't kill the daemon or `launchctl kill` it.
+- **Identity:** the journal is written by the user (owner `admin`, mode
+  0600), and the policy loader works under `pthread_setugid_np`.
+- **System extension:** `AgentACL.app activate` registers it; it runs after
+  the user allows it in System Settings (with SIP off, Full Disk Access
+  wasn't needed).
+- **Cost:** on a benchmark of 2000 process launches and reading 20000
+  files, about 30% slower for processes that aren't agents and about 40%
+  for an agent, against the daemon stopped (no kernel caching).
+
+Two bugs found there are fixed: the policy loader rechecks on a fixed
+schedule (a busy Mac kept postponing it, so grants applied 2 to 3 seconds
+late), and the smoke test now writes a user policy that keeps the
+project's access (a user policy replaces the default one).
+
+## What remains to verify
+
+1. Events the smoke test doesn't exercise: link, clone, copyfile,
+   exchangedata, `setattrlist`, `task_for_pid`, Unix-socket connects.
+2. Reducing the cost: muting file events of processes that can't be in a
+   session.
+3. Other agents: Codex, Gemini CLI, IDE extensions, desktop apps.
+4. A standard Mac (SIP on), with Apple's entitlement and Full Disk Access.
+
+Until the entitlement is granted, `docs/security-guarantees.md` keeps
+system-wide enforcement as PLANNED.
 
 ## Development VM
 
