@@ -167,7 +167,7 @@ fn routes(app: &App, r: &Req, csrf: &str) -> Resp {
 
 fn enforcement(d: &Device) -> String {
     match d.report.as_ref().map(|r| &r.machine.enforcement) {
-        Some(e) if e.es_daemon || e.es_extension => "<span class=\"ok\">Endpoint Security</span>".into(),
+        Some(e) if e.es_daemon || e.es_extension => format!("<span class=\"ok\">Endpoint Security</span> <span class=\"muted\">({})</span>", esc(e.es_user.as_deref().unwrap_or("one user"))),
         Some(_) => "<span class=\"warn\">AgentACL sessions only</span>".into(),
         None => "<span class=\"muted\">not reported yet</span>".into(),
     }
@@ -193,8 +193,12 @@ fn warnings(d: &Device, all: &[Device], users: &[crate::db::DeviceUser], current
         } else if r.machine.policy_version.unwrap_or(0) < current_policy {
             w.push(format!("company policy v{} (current v{current_policy})", r.machine.policy_version.unwrap_or(0)));
         }
-        let outside = r.running.iter().filter(|a| a.supervisor.is_none()).count();
-        if outside > 0 && !(r.machine.enforcement.es_daemon || r.machine.enforcement.es_extension) {
+        let e = &r.machine.enforcement;
+        let es_covers = |user: &str| (e.es_daemon || e.es_extension) && e.es_user.as_deref() == Some(user);
+        // Under AgentACL: the packaged copy supervises it, or Endpoint
+        // Security covers its user. Another `agentacl` doesn't count.
+        let outside = r.running.iter().filter(|a| a.supervisor.as_deref() != Some(agentacl_fleet::MANAGED_AGENTACL) && !es_covers(&a.user)).count();
+        if outside > 0 {
             w.push(format!("{outside} agent(s) running outside AgentACL"));
         }
     }

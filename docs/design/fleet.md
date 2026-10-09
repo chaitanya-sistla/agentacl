@@ -44,7 +44,9 @@ them from one server it hosts:
    AgentACL sessions, and the server shows the agents running outside
    AgentACL. With the entitlement (the ES daemon), the file and program
    rules apply to every agent (network rules apply in `agentacl run`
-   sessions only). The ES daemon leaves an agent to Seatbelt only when the
+   sessions only, and argument rules are only logged in `agentacl run`
+   sessions, which ES leaves to Seatbelt). ES serves one user per Mac. The
+   ES daemon leaves an agent to Seatbelt only when the
    root-owned copy of `agentacl`, signed with the hardened runtime (so its
    user can't inject code into it), launched it; any other `agentacl` gets
    an ES session like any agent. Users with admin rights can remove AgentACL;
@@ -53,8 +55,10 @@ them from one server it hosts:
 4. **Least privilege on the Mac.** The reporting service runs as root to
    write the company rules and to read the process table. Everything it
    reads from a user's files it reads in a separate process running as that
-   user (`initgroups`, `setgid`, `setuid`, an empty environment, then
-   exec), which returns JSON within a time limit and a size limit. As
+   user (its primary group as its only group, its gid and uid, an
+   environment of just HOME, USER, LOGNAME and PATH, its own process
+   group, then exec), which returns JSON within a time limit and a size
+   limit. As
    root it reads only the process table (agents identified by their path,
    reading no file and running no program a user could stall). It never
    runs code from the server.
@@ -124,7 +128,9 @@ each, and Caddy cuts off clients that send slowly.
   company policy version applied, and the last policy error if any;
 - **running agents** (root, from the process table): agent processes, their
   user, and whether they run under an `agentacl` supervisor, with that
-  supervisor's executable path (the root-owned copy, or another);
+  supervisor's executable path (only the root-owned copy counts as under
+  AgentACL); Endpoint Security counts if its root process runs at its
+  installed path, and covers its configured user only;
 - **per user** (accounts from the directory service with uid ≥ 501 and a
   home folder), collected by the per-user process: agents installed
   (`discover`, every 10 minutes, with the user's usual install folders in
@@ -162,7 +168,9 @@ format, then a full policy load and Seatbelt profile compile with sample
 values) and writes it atomically to `managed/policy.yaml`. A document that
 fails is not written: the last good one stays, and the error is reported.
 No company policy is written as `version: v1`. A Mac never applies a
-version lower than the one it has.
+version lower than the one it has (after restoring the server from an
+older backup, publish until the version passes the Macs', or re-enroll
+them), nor one more than 100,000 versions ahead.
 
 A running `agentacl run` session keeps the rules it started with (its
 sandbox is fixed): a new company policy marks it stale in the console, and
@@ -176,6 +184,9 @@ applies to the next session. The ES daemon applies it within a second.
   to it, isn't owned by root, is writable by group or others, or is a
   symbolic link;
 - or the Mac is enrolled (`fleet.json` exists) and the file is missing.
+
+(The ES daemon can't refuse to run: it then falls back to the built-ins
+and logs why. Only root can put a Mac in that state.)
 
 When an `org` layer is present, `builtin.disable` in any other document is
 ignored, so the company can rely on the built-in protections (a user who

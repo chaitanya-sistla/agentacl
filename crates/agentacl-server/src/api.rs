@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 const ENROLL_FAILURES_PER_MINUTE: usize = 10;
 /// Report requests per device per minute (a cycle sends up to 10).
 const REPORTS_PER_MINUTE: usize = 12;
-/// Events stored per device per day; more are dropped (and counted).
+/// Events stored per device, and per user of a device, per day; more are
+/// dropped (and counted), so one user can't use up the others' share.
 const EVENTS_PER_DAY: i64 = 50_000;
+const EVENTS_PER_USER_DAY: i64 = 20_000;
 /// Caps on one report's lists.
 const MAX_USERS: usize = 100;
 const MAX_SESSIONS: usize = 500;
@@ -36,6 +38,12 @@ pub type Reply = (u16, Value);
 
 fn err(status: u16, msg: &str) -> Reply {
     (status, json!({ "error": msg }))
+}
+
+/// Whether a request carries a working device key (checked before its body
+/// is read).
+pub fn known_device(app: &App, auth: Option<&str>) -> bool {
+    device(app, auth).is_ok()
 }
 
 /// The device a request's `Authorization: Bearer <key>` belongs to.
@@ -186,7 +194,10 @@ fn report(app: &App, auth: Option<&str>, body: &[u8]) -> Reply {
     for u in &mut rep.users {
         u.sessions.truncate(MAX_SESSIONS);
         u.events.truncate(agentacl_fleet::MAX_EVENTS);
-        let keep = u.events.len().min(room);
+        let user_today: i64 =
+            db.conn.query_row("SELECT COUNT(*) FROM events WHERE device_id = ?1 AND user = ?2 AND received >= ?3", rusqlite::params![id, u.user, now - 86_400], |r| r.get(0)).unwrap_or(0);
+        let user_room = (EVENTS_PER_USER_DAY - user_today).max(0) as usize;
+        let keep = u.events.len().min(room).min(user_room);
         dropped += u.events.len() - keep;
         u.events.truncate(keep);
         room -= keep;

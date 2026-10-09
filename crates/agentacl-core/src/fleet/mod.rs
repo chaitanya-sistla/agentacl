@@ -104,7 +104,17 @@ impl Managed {
     /// atomically. A version older than the one in force is refused.
     pub fn apply_policy(&self, p: &PolicyResponse, current: Option<u64>) -> Result<()> {
         if current.is_some_and(|c| p.version < c) {
-            bail!("refusing company policy v{} older than v{} in force", p.version, current.unwrap_or(0));
+            bail!(
+                "refusing company policy v{} older than v{} in force (a server restored from a backup: publish the policy again until its version passes v{}, or re-enroll the Mac)",
+                p.version,
+                current.unwrap_or(0),
+                current.unwrap_or(0)
+            );
+        }
+        // Versions go up one at a time: a huge jump would lock the Mac out
+        // of every later policy.
+        if p.version > current.unwrap_or(0) + 100_000 {
+            bail!("refusing company policy v{}: too far ahead of v{} in force", p.version, current.unwrap_or(0));
         }
         let yaml = if p.yaml.trim().is_empty() { "version: v1\n".to_string() } else { p.yaml.clone() };
         agentacl_fleet::validate_company_policy(&yaml).map_err(|e| anyhow::anyhow!("company policy v{}: {e}", p.version))?;
@@ -188,7 +198,7 @@ pub fn cycle(m: &Managed, cfg: &FleetConfig, exe: &Path) -> Result<()> {
     let now = crate::notify::now();
     let discover = now - state.last_discover >= DISCOVER_EVERY;
     let snap = crate::proc::snapshot();
-    let machine = MachineStatus { identity: collect::identity(), enforcement: collect::enforcement(&snap), policy_version: state.policy_version, policy_error: state.policy_error.clone() };
+    let machine = MachineStatus { identity: collect::identity(), enforcement: collect::enforcement(&snap, m), policy_version: state.policy_version, policy_error: state.policy_error.clone() };
     let running = collect::running(&snap);
     let mut server_policy = None;
     // A test folder (`--root`): the collector reads the test's data folders
@@ -283,13 +293,20 @@ pub fn cycle(m: &Managed, cfg: &FleetConfig, exe: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A cycle for an enrolled Mac; a token left by a reinstalled package is
+/// no longer needed.
+fn cycle_enrolled(m: &Managed, cfg: &FleetConfig, exe: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(m.enroll_file());
+    cycle(m, cfg, exe)
+}
+
 /// The LaunchDaemon's loop: enroll if told to and not yet enrolled, then a
 /// cycle every minute (every 10 minutes after errors).
 pub fn run(m: &Managed, exe: &Path) -> ! {
     crate::agents::identify_without_file_reads();
     loop {
         let wait = match m.read_config() {
-            Ok(Some(cfg)) => match cycle(m, &cfg, exe) {
+            Ok(Some(cfg)) => match cycle_enrolled(m, &cfg, exe) {
                 Ok(()) => {
                     let mut s = m.read_state();
                     s.last_error = None;

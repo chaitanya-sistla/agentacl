@@ -55,6 +55,9 @@ pub struct Enforcement {
     pub es_daemon: bool,
     /// The Endpoint Security system extension is activated.
     pub es_extension: bool,
+    /// The user whose agents Endpoint Security covers (it serves one).
+    #[serde(default)]
+    pub es_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

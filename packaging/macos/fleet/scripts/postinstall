@@ -19,6 +19,8 @@ fi
 if [[ "$(stat -f %u /usr/local/bin)" == 0 ]] && { [[ ! -e /usr/local/bin/agentacl ]] || [[ -L /usr/local/bin/agentacl ]]; }; then
   ln -sfh "$R/bin/agentacl" /usr/local/bin/agentacl
 fi
+# Its log: errors only, but root's.
+touch /var/log/agentacl-fleet.log && chmod 600 /var/log/agentacl-fleet.log
 launchctl bootout system/ai.agentacl.fleet 2>/dev/null || true
 launchctl bootstrap system "$P"
 exit 0

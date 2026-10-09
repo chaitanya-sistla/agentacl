@@ -26,6 +26,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
 
+/// The largest body of any request but a device's report.
+const SMALL_BODY: usize = 64 * 1024;
 /// Requests handled at once; more get 503.
 const MAX_CONNECTIONS: usize = 256;
 
@@ -98,12 +100,20 @@ fn header(name: &str, value: &str) -> Header {
 /// last address in `X-Forwarded-For` (the one the proxy added).
 fn client(config: &Config, remote: Option<std::net::SocketAddr>, xff: Option<&str>) -> String {
     let ip = remote.map(|r| r.ip().to_string()).unwrap_or_default();
-    if config.trusted_proxies.contains(&ip) {
-        if let Some(last) = xff.and_then(|x| x.rsplit(',').next()).map(str::trim).filter(|s| !s.is_empty()) {
-            return last.to_string();
+    let addr = if config.trusted_proxies.contains(&ip) { xff.and_then(|x| x.rsplit(',').next()).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&ip).to_string() } else { ip };
+    network_of(&addr)
+}
+
+/// An IPv6 client is limited by its /64 (one user gets a whole /64).
+fn network_of(addr: &str) -> String {
+    match addr.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
         }
+        Ok(std::net::IpAddr::V6(v6)) => v6.to_ipv4_mapped().map(|v4| v4.to_string()).unwrap_or_default(),
+        _ => addr.to_string(),
     }
-    ip
 }
 
 fn serve_one(app: &App, mut req: tiny_http::Request) {
@@ -114,9 +124,11 @@ fn serve_one(app: &App, mut req: tiny_http::Request) {
     let get = |name: &str| req.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string());
     let (auth, cookie_h, xff, ctype) = (get("Authorization"), get("Cookie"), get("X-Forwarded-For"), get("Content-Type"));
     let client = client(&app.config, req.remote_addr().copied(), xff.as_deref());
-    // Bodies are capped: a larger one is refused, not truncated.
+    // Bodies are capped: a larger one is refused, not truncated. Only a
+    // known device may send a large one (a report); anything else, 64 KiB.
+    let limit = if path == agentacl_fleet::REPORT && api::known_device(app, auth.as_deref()) { agentacl_fleet::MAX_BODY } else { SMALL_BODY };
     let mut body = Vec::new();
-    if req.as_reader().take(agentacl_fleet::MAX_BODY as u64 + 1).read_to_end(&mut body).is_err() || body.len() > agentacl_fleet::MAX_BODY {
+    if req.as_reader().take(limit as u64 + 1).read_to_end(&mut body).is_err() || body.len() > limit {
         let _ = req.respond(Response::from_string("request too large").with_status_code(413));
         return;
     }

@@ -192,4 +192,6 @@ fn client_address_comes_from_the_proxy_only_when_trusted() {
     let direct = Some("198.51.100.7:5000".parse().unwrap());
     assert_eq!(client(&c, proxy, Some("1.1.1.1, 203.0.113.9")), "203.0.113.9");
     assert_eq!(client(&c, direct, Some("203.0.113.9")), "198.51.100.7", "spoofed header ignored");
+    let v6 = Some("[2001:db8:1:2:3:4:5:6]:5000".parse().unwrap());
+    assert_eq!(client(&c, v6, None), "2001:db8:1:2::/64", "an IPv6 client by its /64");
 }

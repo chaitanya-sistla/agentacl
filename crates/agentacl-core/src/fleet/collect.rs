@@ -59,8 +59,18 @@ fn exe_name(f: &crate::proc::ProcessFacts) -> &str {
     f.exe.as_deref().map(|e| e.rsplit('/').next().unwrap_or(e)).unwrap_or(&f.name)
 }
 
-pub fn enforcement(snap: &[crate::proc::ProcessFacts]) -> Enforcement {
-    Enforcement { es_daemon: snap.iter().any(|f| exe_name(f) == "agentacl-esd"), es_extension: snap.iter().any(|f| exe_name(f) == "ai.agentacl.app.esd") }
+/// Endpoint Security, from root processes at their installed paths only (a
+/// user's process with the same name doesn't count), and the user it serves.
+pub fn enforcement(snap: &[crate::proc::ProcessFacts], managed: &crate::managed::Managed) -> Enforcement {
+    let root_at = |pred: &dyn Fn(&str) -> bool| snap.iter().any(|f| f.uid == 0 && f.exe.as_deref().is_some_and(pred));
+    let es_daemon = root_at(&|e| e == "/Library/PrivilegedHelperTools/agentacl-esd");
+    let es_extension = root_at(&|e| e.starts_with("/Library/SystemExtensions/") && e.ends_with("/ai.agentacl.app.esd"));
+    let es_user = (es_daemon || es_extension)
+        .then(|| std::fs::read(managed.root.join("esd.json")).ok())
+        .flatten()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["user"].as_str().map(str::to_string));
+    Enforcement { es_daemon, es_extension, es_user }
 }
 
 fn user_name(uid: u32) -> String {
@@ -247,7 +257,7 @@ pub fn collect_user_at(paths: &crate::config::Paths, req: &UserRequest) -> UserR
             decision: e.decision.map(|d| d.as_str().to_string()),
             policy: e.policy,
             rule_id: e.rule_id,
-            reason: e.reason,
+            reason: e.reason.map(|r| redact(&r)),
         };
         bytes += ev.resource.len() + ev.action.len() + 200;
         r.events.push(ev);
@@ -397,6 +407,18 @@ mod tests {
         let mut huge = UserReport { sessions: vec![SessionInfo { project: "p".repeat(10_000), ..Default::default() }; 400], ..Default::default() };
         fit_user(&mut huge, 100_000);
         assert!(huge.sessions.is_empty() && huge.error.is_some());
+    }
+
+    #[test]
+    fn endpoint_security_counts_only_as_root_at_its_path() {
+        let f = |uid: u32, exe: &str| crate::proc::ProcessFacts { pid: 1, ppid: 1, pgid: 0, uid, start_time_us: 0, exe: Some(exe.into()), argv: vec![], name: String::new() };
+        let m = crate::managed::Managed { root: "/nonexistent".into(), owner: 0 };
+        let fake = [f(501, "/Users/u/agentacl-esd"), f(501, "/Library/PrivilegedHelperTools/agentacl-esd")];
+        assert_eq!(enforcement(&fake, &m), Enforcement::default(), "a user's look-alike doesn't count");
+        let real = [f(0, "/Library/PrivilegedHelperTools/agentacl-esd")];
+        assert!(enforcement(&real, &m).es_daemon);
+        let ext = [f(0, "/Library/SystemExtensions/ABC/ai.agentacl.app.esd.systemextension/Contents/MacOS/ai.agentacl.app.esd")];
+        assert!(enforcement(&ext, &m).es_extension);
     }
 
     #[test]

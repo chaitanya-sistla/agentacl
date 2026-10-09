@@ -157,7 +157,9 @@ impl Db {
     }
 
     pub fn revoke_token(&self, id: i64) -> Result<()> {
-        self.conn.execute("UPDATE enroll_tokens SET revoked = 1 WHERE id = ?1", [id])?;
+        if self.conn.execute("UPDATE enroll_tokens SET revoked = 1 WHERE id = ?1", [id])? == 0 {
+            anyhow::bail!("no such token");
+        }
         Ok(())
     }
 
@@ -189,6 +191,9 @@ impl Db {
     pub fn revoke_device(&mut self, id: &str, now: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
         let machine: Option<String> = tx.query_row("SELECT machine_id FROM devices WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        if machine.is_none() {
+            anyhow::bail!("no such machine");
+        }
         tx.execute("UPDATE devices SET revoked = 1 WHERE id = ?1", [id])?;
         if let Some(m) = machine {
             tx.execute("INSERT OR IGNORE INTO blocked_machines (machine_id, since) VALUES (?1, ?2)", params![m, now])?;

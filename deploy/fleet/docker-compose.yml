@@ -1,7 +1,8 @@
 # The AgentACL fleet server behind Caddy (automatic HTTPS). See docs/fleet.md.
 #
 #   cd deploy/fleet
-#   printf '%s\n' 'a long admin password' > admin_password.txt; chmod 600 admin_password.txt
+#   printf '%s\n' 'a long admin password' > admin_password.txt
+#   sudo chown 10001 admin_password.txt && sudo chmod 400 admin_password.txt
 #   FLEET_DOMAIN=fleet.example.com docker compose up -d
 #
 # The server's own port is not published: only Caddy reaches it, and the
