@@ -7,6 +7,20 @@ section whose heading matches the tag, so every release needs one.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
+**AgentACL for a whole company.** Install it on every Mac from your device
+management, see every Mac's agents and what they were refused in one
+console you host, and set company rules that every Mac applies and nothing
+on a Mac can lift. Decisions still happen on each Mac, offline too.
+
+```sh
+cd deploy/fleet && FLEET_DOMAIN=fleet.example.com docker compose up -d --build
+echo "$TOKEN" | scripts/fleet/build-pkg.sh --server https://fleet.example.com
+```
+
+See [docs/fleet.md](docs/fleet.md).
+
 ### Added
 - **Fleets: an endpoint agent and a central server** ([docs/fleet.md](docs/fleet.md)).
   `agentacl-server` (Linux or macOS, a container behind Caddy, SQLite)

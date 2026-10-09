@@ -52,7 +52,7 @@ brew install chaitanya-sistla/agentacl/agentacl
 Or from the release, checked against its published checksum:
 
 ```sh
-V=0.5.0
+V=0.6.0
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/agentacl-$V-macos-universal.tar.gz
 curl -LO https://github.com/chaitanya-sistla/agentacl/releases/download/v$V/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing     # must print: OK

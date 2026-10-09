@@ -1,6 +1,6 @@
 # Security guarantees
 
-What AgentACL actually does, today (v0.5.0), and what it doesn't. This file
+What AgentACL actually does, today (v0.6.0), and what it doesn't. This file
 exists so that we can't overstate a claim by accident. If README, a blog post
 or a launch message says something stronger than this table, the table wins,
 and the other text is a bug.

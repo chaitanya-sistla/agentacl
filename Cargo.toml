@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/agentacl-policy", "crates/agentacl-fleet", "crates/agentacl-core", "crates/agentacl-cli", "crates/agentacl-es", "crates/agentacl-server"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.85"
